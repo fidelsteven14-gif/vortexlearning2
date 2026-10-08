@@ -28,7 +28,7 @@ import {
 
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
-const host = process.env.HOST ?? (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
+const host = process.env.HOST ?? "0.0.0.0";
 const resourceStoragePath = resolve(process.env.RESOURCE_STORAGE_PATH ?? "data/resources");
 const maxResourceBytes = 20 * 1024 * 1024;
 const originList = (process.env.WEB_ORIGINS
