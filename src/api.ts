@@ -91,6 +91,7 @@ export type CurriculumRegistration = {
 };
 
 const tokenKey = "jifunze.session";
+const refreshTokenKey = "jifunze.refresh";
 export const supportEmail = import.meta.env.VITE_SUPPORT_EMAIL ?? "vortexlearning0@gmail.com";
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/, "");
 
@@ -108,7 +109,8 @@ function apiUrl(path: string): string {
   if (import.meta.env.PROD && base.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(base.hostname)) {
     throw new Error("The deployed API must use HTTPS.");
   }
-  return new URL(path, base.origin).toString();
+  const basePath = base.pathname.replace(/\/+$/, "");
+  return new URL(`${basePath}/${path.replace(/^\/+/, "")}`, base.origin).toString();
 }
 
 async function parseApiResponse(response: Response): Promise<{
@@ -132,7 +134,7 @@ async function parseApiResponse(response: Response): Promise<{
 
 function unexpectedApiResponseMessage(): string {
   return import.meta.env.PROD && !configuredApiBase
-    ? "The API is not configured for this website. Deploy the API separately, set VITE_API_BASE_URL to its HTTPS address, and allow this website in the API's WEB_ORIGINS setting."
+    ? "The API is not configured for this website. Deploy the backend separately, set VITE_API_BASE_URL to its HTTPS address, and allow this website in the backend's CORS configuration."
     : "The server returned a page instead of an API response. Check the API address and hosting configuration.";
 }
 
@@ -147,26 +149,64 @@ export function getToken(): string | null {
   return localStorage.getItem(tokenKey);
 }
 
-export function setToken(token: string): void {
+export function getRefreshToken(): string | null {
+  return localStorage.getItem(refreshTokenKey);
+}
+
+export function setToken(token: string, refreshToken?: string): void {
   localStorage.setItem(tokenKey, token);
+  if (refreshToken) localStorage.setItem(refreshTokenKey, refreshToken);
+  else localStorage.removeItem(refreshTokenKey);
 }
 
 export function clearToken(): void {
   localStorage.removeItem(tokenKey);
+  localStorage.removeItem(refreshTokenKey);
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function refreshSession(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+  try {
+    const response = await fetch(apiUrl("/api/auth/refresh"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!response.ok) return false;
+    const result = await response.json() as { token?: string; refreshToken?: string };
+    if (!result.token || !result.refreshToken) return false;
+    setToken(result.token, result.refreshToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function requestHeaders(options: RequestInit, token: string | null): Headers {
   const headers = new Headers(options.headers);
   if (options.body && !(options.body instanceof Blob) && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
+}
 
+export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = apiUrl(path);
   let response: Response;
   try {
-    response = await fetch(url, { ...options, headers });
+    response = await fetch(url, { ...options, headers: requestHeaders(options, getToken()) });
+    if (
+      response.status === 401
+      && getToken()
+      && getRefreshToken()
+      && !path.startsWith("/api/auth/")
+      && !(options.body instanceof ReadableStream)
+      && await refreshSession()
+    ) {
+      response = await fetch(url, { ...options, headers: requestHeaders(options, getToken()) });
+    }
   } catch {
     throw new Error(import.meta.env.PROD && !configuredApiBase
       ? unexpectedApiResponseMessage()
@@ -183,13 +223,13 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 }
 
 export async function apiFileRequest(path: string): Promise<Blob> {
-  const headers = new Headers();
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   const url = apiUrl(path);
   let response: Response;
   try {
-    response = await fetch(url, { headers });
+    response = await fetch(url, { headers: requestHeaders({}, getToken()) });
+    if (response.status === 401 && getToken() && getRefreshToken() && await refreshSession()) {
+      response = await fetch(url, { headers: requestHeaders({}, getToken()) });
+    }
   } catch {
     throw new Error(import.meta.env.PROD && !configuredApiBase
       ? unexpectedApiResponseMessage()

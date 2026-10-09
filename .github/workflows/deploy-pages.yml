@@ -3,6 +3,15 @@ name: Deploy frontend to GitHub Pages
 on:
   push:
     branches: [main, master]
+    paths:
+      - ".github/workflows/deploy-pages.yml"
+      - "index.html"
+      - "public/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.app.json"
+      - "vite.config.ts"
   workflow_dispatch:
 
 permissions:
@@ -27,7 +36,7 @@ jobs:
           cache: npm
       - name: Validate API deployment configuration
         env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1' }}
         run: |
           if [ -z "$VITE_API_BASE_URL" ]; then
             echo "::notice::VITE_API_BASE_URL is not set. The frontend will be published without a connected API."
@@ -41,9 +50,9 @@ jobs:
         run: npm ci
       - name: Build frontend
         env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1' }}
           VITE_BASE_PATH: ${{ github.event.repository.name == format('{0}.github.io', github.repository_owner) && '/' || format('/{0}/', github.event.repository.name) }}
-        run: npm run build
+        run: npm run build:frontend
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
       - name: Upload site

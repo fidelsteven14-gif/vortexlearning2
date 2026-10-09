@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, BookOpen, Eye, EyeOff, LockKeyhole, Mail, UserRo
 import { ApiRequestError, apiRequest, setToken, supportEmail, type User } from "./api";
 import Brand from "./Brand";
 
-type AuthResponse = { token: string; user: User };
+type AuthResponse = { token: string; refreshToken?: string; user: User };
 type AuthMode = "login" | "register" | "verify" | "forgot" | "reset";
 type GoogleButtonText = "continue_with" | "signup_with";
 type GoogleIdentityApi = {
@@ -19,7 +19,10 @@ declare global {
 
 export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
   const params = new URLSearchParams(window.location.search);
-  const initialResetToken = params.get("token") ?? params.get("resetToken") ?? "";
+  const authParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const isRecoveryRedirect = authParams.get("type") === "recovery";
+  const initialResetToken = params.get("token") ?? params.get("resetToken") ?? (isRecoveryRedirect ? authParams.get("access_token") : null) ?? "";
+  const initialResetRefreshToken = isRecoveryRedirect ? authParams.get("refresh_token") ?? "" : "";
   const initialVerificationEmail = params.get("verifyEmail") ?? "";
   const [mode, setMode] = useState<AuthMode>(initialResetToken ? "reset" : initialVerificationEmail ? "verify" : "login");
   const [name, setName] = useState("");
@@ -36,6 +39,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [resetToken, setResetToken] = useState(initialResetToken);
+  const [resetRefreshToken, setResetRefreshToken] = useState(initialResetRefreshToken);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -117,7 +121,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
           ...(mode === "register" ? { grade, username } : {}),
         }),
       });
-      setToken(response.token);
+      setToken(response.token, response.refreshToken);
       onAuthenticated(response.user);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Google sign-in could not be completed.");
@@ -163,12 +167,13 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
       if (mode === "reset") {
         const response = await apiRequest<{ message: string }>("/api/auth/reset-password", {
           method: "POST",
-          body: JSON.stringify({ token: resetToken, password, passwordConfirmation }),
+          body: JSON.stringify({ token: resetToken, refreshToken: resetRefreshToken, password, passwordConfirmation }),
         });
         window.history.replaceState({}, "", import.meta.env.BASE_URL);
         setPassword("");
         setPasswordConfirmation("");
         setResetToken("");
+        setResetRefreshToken("");
         setMode("login");
         setNotice(response.message);
         return;
@@ -193,7 +198,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
           body: JSON.stringify({ identifier, password }),
         },
       );
-      setToken(response.token);
+      setToken(response.token, response.refreshToken);
       onAuthenticated(response.user);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The request could not be completed.");
@@ -238,7 +243,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
           <div className="auth-mobile-brand"><Brand /></div>
           <span className="section-kicker">{mode === "login" ? "WELCOME BACK" : mode === "register" ? "JOIN YOUR LEARNING SPACE" : mode === "verify" ? "EMAIL VERIFICATION" : mode === "forgot" ? "ACCOUNT RECOVERY" : "CHOOSE A NEW PASSWORD"}</span>
           <h2>{mode === "login" ? "Sign in to learn" : mode === "register" ? "Create your account" : mode === "verify" ? "Verify your email" : mode === "forgot" ? "Forgot your password?" : "Reset your password"}</h2>
-          <p className="auth-intro">{mode === "login" ? "Pick up where you left off." : mode === "register" ? "Create a learner account to get started." : mode === "verify" ? `Enter the 5-digit code sent to ${email}. It expires after 10 minutes. If it is not in your inbox, check Spam or Junk, then request a new code.` : mode === "forgot" ? "Enter the email on your account and we’ll send a reset link." : "Choose a new password for your account."}</p>
+          <p className="auth-intro">{mode === "login" ? "Pick up where you left off." : mode === "register" ? "Create a learner account to get started." : mode === "verify" ? `Enter the 6-digit code sent to ${email}. If it is not in your inbox, check Spam or Junk, then request a new code.` : mode === "forgot" ? "Enter the email on your account and we’ll send a reset link." : "Choose a new password for your account."}</p>
 
           {(mode === "login" || mode === "register") && <div className="auth-tabs" role="tablist" aria-label="Account access">
             <button className={mode === "login" ? "auth-tab auth-tab-active" : "auth-tab"} onClick={() => { setMode("login"); setError(""); setNotice(""); }} role="tab" aria-selected={mode === "login"}>Sign in</button>
@@ -253,12 +258,12 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
             {(mode === "register" || mode === "verify" || mode === "forgot") && <label className="form-label">{mode === "forgot" ? "Account email" : mode === "register" ? "Student or guardian email" : "Email address"}<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} placeholder="you@example.com" required /></div></label>}
             {mode === "register" && <label className="form-label">CBC grade<select className="auth-grade-select" value={grade} onChange={(event) => setGrade(event.target.value)} required><option value="" disabled>Choose your grade</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1}>Grade {index + 1}</option>)}</select></label>}
             {mode === "register" && <label className="form-label">Username<div className="auth-input-wrap"><UserRound size={16} /><input value={username} onChange={(event) => { setUsername(event.target.value); setUsernameAvailable(null); setUsernameStatus(""); setUsernameSuggestions([]); }} onBlur={() => void checkUsernameAvailability()} autoComplete="username" minLength={3} maxLength={30} pattern="[A-Za-z0-9._@#-]{3,30}" title="Use 3–30 characters: letters, numbers, periods, underscores, @, #, or hyphens." aria-describedby="username-format-help" placeholder="Choose a username" required /></div><span id="username-format-help" className="username-availability">Use 3–30 characters: letters, numbers, periods, underscores, @, #, or hyphens.</span>{usernameStatus && <span className={`username-availability ${usernameAvailable === false ? "username-taken" : usernameAvailable ? "username-available" : ""}`} role="status">{usernameStatus}</span>}{usernameSuggestions.length > 0 && <div className="username-suggestions" aria-label="Available username suggestions">{usernameSuggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => { setUsername(suggestion); setUsernameAvailable(true); setUsernameStatus("This suggested username is available."); setUsernameSuggestions([]); }}>{suggestion}</button>)}</div>}</label>}
-            {mode === "verify" && <label className="form-label">5-digit verification code<div className="auth-input-wrap"><input className="verification-code-input" type="text" inputMode="numeric" pattern="[0-9]{5}" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 5))} autoComplete="one-time-code" maxLength={5} placeholder="00000" aria-label="5-digit verification code" required /></div></label>}
+            {mode === "verify" && <label className="form-label">6-digit verification code<div className="auth-input-wrap"><input className="verification-code-input" type="text" inputMode="numeric" pattern="[0-9]{6}" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" maxLength={6} placeholder="000000" aria-label="6-digit verification code" required /></div></label>}
             {(mode === "login" || mode === "register" || mode === "reset") && <>
               <label className="form-label">{mode === "reset" ? "New password" : "Password"}<span className="auth-input-wrap"><LockKeyhole size={16} /><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={mode === "login" ? 1 : 6} maxLength={72} placeholder={mode === "login" ? "Your password" : "At least 6 characters"} required /><button className="password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span></label>
               {(mode === "register" || mode === "reset") && <label className="form-label">Confirm password<span className="auth-input-wrap"><LockKeyhole size={16} /><input type={showConfirmation ? "text" : "password"} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} autoComplete="new-password" minLength={6} maxLength={72} placeholder="Enter the password again" required /><button className="password-toggle" type="button" onClick={() => setShowConfirmation((value) => !value)} aria-label={showConfirmation ? "Hide confirmation password" : "Show confirmation password"}>{showConfirmation ? <EyeOff size={16} /> : <Eye size={16} />}</button></span></label>}
             </>}
-            {mode === "register" && <p className="auth-safety">Use an email you or your parent/guardian can access. We’ll send a one-time 5-digit code here; verify it before signing in.</p>}
+            {mode === "register" && <p className="auth-safety">Use an email you or your parent/guardian can access. We’ll send a one-time 6-digit code here; verify it before signing in.</p>}
             {mode === "login" && <div className="auth-access-actions">
               <div className="auth-access-item"><span>Forgot your password?</span><button className="auth-action-button auth-action-reset" type="button" onClick={() => { setEmail(identifier.includes("@") ? identifier : ""); setMode("forgot"); setError(""); setNotice(""); }}>Forgot Password</button></div>
             </div>}

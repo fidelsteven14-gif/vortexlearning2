@@ -56,7 +56,8 @@ function App() {
   const adminRoute = window.location.pathname === "/admin" || window.location.pathname.startsWith("/admin/");
   const resetRoute = window.location.pathname === "/reset-password"
     || new URLSearchParams(window.location.search).has("token")
-    || new URLSearchParams(window.location.search).has("resetToken");
+    || new URLSearchParams(window.location.search).has("resetToken")
+    || new URLSearchParams(window.location.hash.replace(/^#/, "")).get("type") === "recovery";
 
   useEffect(() => {
     if (resetRoute) {
