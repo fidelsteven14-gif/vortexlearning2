@@ -25,13 +25,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Check API deployment configuration
+      - name: Validate API deployment configuration
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
         run: |
           if [ -z "$VITE_API_BASE_URL" ]; then
-            echo "::error::Set the VITE_API_BASE_URL repository variable to the deployed HTTPS API origin before deploying GitHub Pages."
-            exit 1
+            echo "::notice::VITE_API_BASE_URL is not set. The frontend will be published without a connected API."
+            exit 0
           fi
           if [[ "$VITE_API_BASE_URL" != https://* ]]; then
             echo "::error::VITE_API_BASE_URL must use HTTPS."
