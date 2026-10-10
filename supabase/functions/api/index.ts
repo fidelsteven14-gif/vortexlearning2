@@ -419,6 +419,14 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     if (!await limited(10, 900)) return fail("Too many verification attempts. Please wait and try again.", 429);
     const parsed = verifyEmailSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
+    if (parsed.data.username) {
+      const { data: usernameCollision, error: usernameError } = await service.from("profiles")
+        .select("id").eq("username", parsed.data.username.toLowerCase()).limit(1);
+      if (usernameError) throw new Error(usernameError.message);
+      if (usernameCollision?.length) {
+        return fail("That username has already been taken. Choose another username before verifying your email.", 409);
+      }
+    }
     const { data, error } = await authClient().auth.verifyOtp({
       email: parsed.data.email,
       token: parsed.data.code,
