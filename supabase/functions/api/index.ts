@@ -70,6 +70,18 @@ const registerSchema = z.object({
 const verifyEmailSchema = z.object({
   email: emailSchema,
   code: z.string().regex(/^\d{6}$/),
+  name: z.string().trim().min(2).max(80).optional(),
+  username: usernameSchema.optional(),
+  grade: gradeSchema.optional(),
+}).superRefine((value, context) => {
+  const registrationFields = [value.name, value.username, value.grade];
+  if (registrationFields.some(Boolean) && !registrationFields.every(Boolean)) {
+    context.addIssue({
+      code: "custom",
+      path: ["name"],
+      message: "Complete all learner details to finish registration.",
+    });
+  }
 });
 
 const resendEmailSchema = z.object({
@@ -302,9 +314,29 @@ function suggestUsernames(name: string, unavailable: Set<string>, count = 5): st
 
 async function appSession(session: { access_token: string; refresh_token: string }, userId: string): Promise<Record<string, unknown>> {
   const profile = await profileById(userId);
-  if (!profile || !profile.active) throw new Error("The account is unavailable.");
+  if (!profile || !profile.active) throw new Error("The verified account profile is unavailable. Please contact support.");
   if (!profile.email_verified) throw new Error("Verify your email before signing in. You can request a new verification code below.");
   return { token: session.access_token, refreshToken: session.refresh_token, user: userForClient(profile) };
+}
+
+async function createVerifiedStudentProfile(
+  user: { id: string; email?: string },
+  input: { name: string; username: string; grade: string },
+): Promise<void> {
+  if (!user.email) throw new Error("Verified account has no email address.");
+  const { error } = await service.from("profiles").insert({
+    id: user.id,
+    name: input.name,
+    username: input.username.toLowerCase(),
+    email: user.email.toLowerCase(),
+    email_verified: true,
+    role: "student",
+    grade: input.grade,
+  });
+  if (error?.code === "23505") {
+    throw new Error("That email or username is already associated with another platform account.");
+  }
+  if (error) throw new Error(error.message);
 }
 
 async function googleProfile(credential: string): Promise<{ email: string; name: string }> {
@@ -370,7 +402,6 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     const { data, error } = await authClient().auth.signUp({
       email: input.email,
       password: input.password,
-      options: { data: { name: input.name, username: input.username, grade: input.grade } },
     });
     if (error) {
       const message = error.message.toLowerCase();
@@ -394,8 +425,27 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       type: "signup",
     });
     if (error || !data.user) return fail("That verification code is invalid or has expired. Check it and try again, or request a new code.", 400);
-    const { error: profileError } = await service.from("profiles").update({ email_verified: true }).eq("id", data.user.id);
-    if (profileError) throw new Error(profileError.message);
+    const existingProfile = await profileById(data.user.id);
+    if (existingProfile) {
+      const { error: profileError } = await service.from("profiles").update({ email_verified: true }).eq("id", data.user.id);
+      if (profileError) throw new Error(profileError.message);
+    } else {
+      if (!parsed.data.name || !parsed.data.username || !parsed.data.grade) {
+        return fail("Your email is verified, but registration details are missing. Please register again or contact support.", 422);
+      }
+      try {
+        await createVerifiedStudentProfile(data.user, {
+          name: parsed.data.name,
+          username: parsed.data.username,
+          grade: parsed.data.grade,
+        });
+      } catch (profileError) {
+        if (profileError instanceof Error && profileError.message.includes("already associated")) {
+          return fail(profileError.message, 409);
+        }
+        throw profileError;
+      }
+    }
     return json({ message: "Your email is verified. You can now sign in." });
   }
 
@@ -414,16 +464,27 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     if (!parsed.success) return invalidBody(parsed);
     const identifier = parsed.data.identifier.trim().toLowerCase();
     const { data: row, error: profileError } = identifier.includes("@")
-      ? await service.from("profiles").select("email,active").eq("email", identifier).maybeSingle()
-      : await service.from("profiles").select("email,active").eq("username", identifier).maybeSingle();
+      ? await service.from("profiles").select("email,active,email_verified").eq("email", identifier).maybeSingle()
+      : await service.from("profiles").select("email,active,email_verified").eq("username", identifier).maybeSingle();
     if (profileError) throw new Error(profileError.message);
-    const profile = row as { email: string; active: boolean } | null;
+    const profile = row as { email: string; active: boolean; email_verified: boolean } | null;
+    if (profile && !profile.active) return fail("This account is inactive. Please contact your administrator.", 403);
+    if (profile && !profile.email_verified) {
+      return fail("Verify your email before signing in. Enter the six-digit code we sent to your inbox.", 403);
+    }
     const { data, error } = await authClient().auth.signInWithPassword({
       email: profile?.email ?? identifier,
       password: parsed.data.password,
     });
-    if (error || !data.session || !data.user || !profile?.active) {
+    if (error) {
+      if (error.message.toLowerCase().includes("email not confirmed")) {
+        return fail("Verify your email before signing in. Enter the six-digit code we sent to your inbox.", 403);
+      }
       return fail("Email, username, or password is incorrect.", 401);
+    }
+    if (!data.session || !data.user) return fail("Email, username, or password is incorrect.", 401);
+    if (!profile) {
+      return fail("This verified email has no learner profile yet. Contact platform support to finish setting up the account.", 403);
     }
     const output = await appSession(data.session, data.user.id);
     await service.from("profiles").update({ last_seen_at: new Date().toISOString() }).eq("id", data.user.id);
@@ -476,13 +537,18 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       return fail("Google sign-in is temporarily unavailable. Please use email or username sign-in.", 503);
     }
     if (parsed.data.intent === "register") {
-      const { error: updateError } = await service.from("profiles").update({
-        name: identity.name,
-        username: parsed.data.username,
-        grade: parsed.data.grade,
-        email_verified: true,
-      }).eq("id", data.user.id);
-      if (updateError) throw new Error(updateError.message);
+      try {
+        await createVerifiedStudentProfile(data.user, {
+          name: identity.name,
+          username: parsed.data.username!,
+          grade: parsed.data.grade!,
+        });
+      } catch (profileError) {
+        if (profileError instanceof Error && profileError.message.includes("already associated")) {
+          return fail(profileError.message, 409);
+        }
+        throw profileError;
+      }
     } else {
       await service.from("profiles").update({ email_verified: true }).eq("id", data.user.id);
     }
