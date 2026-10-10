@@ -54,10 +54,15 @@ function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const adminRoute = window.location.pathname === "/admin" || window.location.pathname.startsWith("/admin/");
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const resetRoute = window.location.pathname === "/reset-password"
-    || new URLSearchParams(window.location.search).has("token")
-    || new URLSearchParams(window.location.search).has("resetToken")
-    || new URLSearchParams(window.location.hash.replace(/^#/, "")).get("type") === "recovery";
+    || searchParams.has("token")
+    || searchParams.has("resetToken")
+    || searchParams.has("access_token")
+    || searchParams.get("type") === "recovery"
+    || hashParams.get("type") === "recovery"
+    || hashParams.has("access_token");
 
   useEffect(() => {
     if (resetRoute) {

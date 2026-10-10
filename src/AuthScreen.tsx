@@ -17,13 +17,24 @@ declare global {
   }
 }
 
+function parseRecoveryTokens() {
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const queryToken = searchParams.get("token") ?? searchParams.get("resetToken") ?? searchParams.get("access_token") ?? "";
+  const queryRefreshToken = searchParams.get("refresh_token") ?? "";
+  const hashToken = hashParams.get("access_token") ?? hashParams.get("token") ?? "";
+  const hashRefreshToken = hashParams.get("refresh_token") ?? "";
+  const isRecoveryRedirect = hashParams.get("type") === "recovery" || searchParams.get("type") === "recovery";
+  const token = queryToken || hashToken;
+  const refreshToken = queryRefreshToken || hashRefreshToken;
+  return { token, refreshToken, isRecoveryRedirect: isRecoveryRedirect || Boolean(token) };
+}
+
 export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
-  const params = new URLSearchParams(window.location.search);
-  const authParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-  const isRecoveryRedirect = authParams.get("type") === "recovery";
-  const initialResetToken = params.get("token") ?? params.get("resetToken") ?? (isRecoveryRedirect ? authParams.get("access_token") : null) ?? "";
-  const initialResetRefreshToken = isRecoveryRedirect ? authParams.get("refresh_token") ?? "" : "";
-  const initialVerificationEmail = params.get("verifyEmail") ?? "";
+  const recovery = parseRecoveryTokens();
+  const initialResetToken = recovery.token;
+  const initialResetRefreshToken = recovery.refreshToken;
+  const initialVerificationEmail = new URLSearchParams(window.location.search).get("verifyEmail") ?? "";
   const [mode, setMode] = useState<AuthMode>(initialResetToken ? "reset" : initialVerificationEmail ? "verify" : "login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState(initialVerificationEmail);
@@ -257,7 +268,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
             {mode === "login" && <label className="form-label">Email or username<div className="auth-input-wrap"><Mail size={16} /><input type="text" value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" maxLength={254} placeholder="you@example.com or username" required /></div></label>}
             {(mode === "register" || mode === "verify" || mode === "forgot") && <label className="form-label">{mode === "forgot" ? "Account email" : mode === "register" ? "Student or guardian email" : "Email address"}<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} placeholder="you@example.com" required /></div></label>}
             {mode === "register" && <label className="form-label">CBC grade<select className="auth-grade-select" value={grade} onChange={(event) => setGrade(event.target.value)} required><option value="" disabled>Choose your grade</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1}>Grade {index + 1}</option>)}</select></label>}
-            {mode === "register" && <label className="form-label">Username<div className="auth-input-wrap"><UserRound size={16} /><input value={username} onChange={(event) => { setUsername(event.target.value); setUsernameAvailable(null); setUsernameStatus(""); setUsernameSuggestions([]); }} onBlur={() => void checkUsernameAvailability()} autoComplete="username" minLength={3} maxLength={30} pattern="[A-Za-z0-9._@#\\-]{3,30}" title="Use 3–30 characters: letters, numbers, periods, underscores, @, #, or hyphens." aria-describedby="username-format-help" placeholder="Choose a username" required /></div><span id="username-format-help" className="username-availability">Use 3–30 characters: letters, numbers, periods, underscores, @, #, or hyphens.</span>{usernameStatus && <span className={`username-availability ${usernameAvailable === false ? "username-taken" : usernameAvailable ? "username-available" : ""}`} role="status">{usernameStatus}</span>}{usernameSuggestions.length > 0 && <div className="username-suggestions" aria-label="Available username suggestions">{usernameSuggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => { setUsername(suggestion); setUsernameAvailable(true); setUsernameStatus("This suggested username is available."); setUsernameSuggestions([]); }}>{suggestion}</button>)}</div>}</label>}
+            {mode === "register" && <label className="form-label">Username<div className="auth-input-wrap"><UserRound size={16} /><input value={username} onChange={(event) => { setUsername(event.target.value); setUsernameAvailable(null); setUsernameStatus(""); setUsernameSuggestions([]); }} onBlur={() => void checkUsernameAvailability()} autoComplete="username" minLength={3} maxLength={30} pattern="[A-Za-z0-9._@#\-]{3,30}" title="Use 3–30 characters: letters, numbers, periods, underscores, @, #, or hyphens." aria-describedby="username-format-help" placeholder="Choose a username" required /></div><span id="username-format-help" className="username-availability">Use 3–30 characters: letters, numbers, periods, underscores, @, #, or hyphens.</span>{usernameStatus && <span className={`username-availability ${usernameAvailable === false ? "username-taken" : usernameAvailable ? "username-available" : ""}`} role="status">{usernameStatus}</span>}{usernameSuggestions.length > 0 && <div className="username-suggestions" aria-label="Available username suggestions">{usernameSuggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => { setUsername(suggestion); setUsernameAvailable(true); setUsernameStatus("This suggested username is available."); setUsernameSuggestions([]); }}>{suggestion}</button>)}</div>}</label>}
             {mode === "verify" && <label className="form-label">6-digit verification code<div className="auth-input-wrap"><input className="verification-code-input" type="text" inputMode="numeric" pattern="[0-9]{6}" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" maxLength={6} placeholder="000000" aria-label="6-digit verification code" required /></div></label>}
             {(mode === "login" || mode === "register" || mode === "reset") && <>
               <label className="form-label">{mode === "reset" ? "New password" : "Password"}<span className="auth-input-wrap"><LockKeyhole size={16} /><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={mode === "login" ? 1 : 6} maxLength={72} placeholder={mode === "login" ? "Your password" : "At least 6 characters"} required /><button className="password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span></label>
