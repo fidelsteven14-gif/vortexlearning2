@@ -63,9 +63,11 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
   const recovery = parseRecoveryTokens();
   const initialResetToken = recovery.token;
   const initialResetRefreshToken = recovery.refreshToken;
-  const initialVerificationEmail = new URLSearchParams(window.location.search).get("verifyEmail") ?? "";
+  const initialSearchParams = new URLSearchParams(window.location.search);
+  const initialVerificationEmail = initialSearchParams.get("verifyEmail") ?? "";
+  const emailVerificationCode = initialSearchParams.get("code") ?? "";
   const pendingRegistration = readPendingRegistration(initialVerificationEmail);
-  const [mode, setMode] = useState<AuthMode>(initialResetToken ? "reset" : initialVerificationEmail ? "verify" : "login");
+  const [mode, setMode] = useState<AuthMode>(initialResetToken ? "reset" : initialVerificationEmail || /^\d{6}$/.test(emailVerificationCode) ? "verify" : "login");
   const [name, setName] = useState(pendingRegistration?.name ?? "");
   const [email, setEmail] = useState(initialVerificationEmail);
   const [identifier, setIdentifier] = useState("");
@@ -76,7 +78,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
   const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
   const [password, setPassword] = useState("");
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
-  const [verificationCode, setVerificationCode] = useState("");
+  const [verificationCode, setVerificationCode] = useState(/^\d{6}$/.test(emailVerificationCode) ? emailVerificationCode : "");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [resetToken, setResetToken] = useState(initialResetToken);
@@ -204,6 +206,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: (user
           }),
         });
         sessionStorage.removeItem(pendingRegistrationKey);
+        window.history.replaceState({}, "", import.meta.env.BASE_URL);
         setMode("login");
         setPassword("");
         setVerificationCode("");
