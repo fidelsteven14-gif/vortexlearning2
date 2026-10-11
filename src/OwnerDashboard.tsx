@@ -79,6 +79,11 @@ export default function OwnerDashboard({ user, onLogout }: { user: User; onLogou
   const [error, setError] = useState("");
   const [grade, setGrade] = useState("Grade 6");
   const [invitation, setInvitation] = useState<Invitation | null>(null);
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserUsername, setNewUserUsername] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserPasswordConfirmation, setNewUserPasswordConfirmation] = useState("");
   const gradeOptions = Array.from({ length: 12 }, (_, index) => `Grade ${index + 1}`);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -191,6 +196,42 @@ export default function OwnerDashboard({ user, onLogout }: { user: User; onLogou
       setCopied(false);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Could not create an invitation.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createUserAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setNotice("");
+    if (newUserPassword !== newUserPasswordConfirmation) {
+      setError("The password and confirmation password must match.");
+      setBusy(false);
+      return;
+    }
+    try {
+      const result = await apiRequest<{ message: string; user: { id: string; name: string; username: string; email: string; userCode: string; grade: string } }>('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: newUserName,
+          email: newUserEmail,
+          grade,
+          username: newUserUsername,
+          password: newUserPassword,
+          passwordConfirmation: newUserPasswordConfirmation,
+        }),
+      });
+      setNotice(result.message);
+      setNewUserName("");
+      setNewUserEmail("");
+      setNewUserUsername("");
+      setNewUserPassword("");
+      setNewUserPasswordConfirmation("");
+      refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not create the learner account.");
     } finally {
       setBusy(false);
     }
@@ -443,6 +484,7 @@ export default function OwnerDashboard({ user, onLogout }: { user: User; onLogou
     { label: "Published learning content", icon: Check },
     { label: "PDF learning resources", icon: FileUp },
     { label: "Invite a learner", icon: GraduationCap },
+    { label: "Add user", icon: Plus },
     { label: "Quizzes & assessments", icon: ClipboardCheck },
   ];
   const visibleStudents = students.filter((student) =>
@@ -580,6 +622,28 @@ export default function OwnerDashboard({ user, onLogout }: { user: User; onLogou
               <button className="primary-button" type="submit" disabled={busy}><Plus size={15} /> {busy ? "Creating…" : "Create invitation"}</button>
             </form>
             {invitation && <div className="invite-result"><div><small>Share this code with the learner or guardian · expires {new Date(invitation.expiresAt).toLocaleDateString("en-KE")}</small><strong>{invitation.code}</strong></div><button className="copy-button" onClick={copyCode} aria-label="Copy invitation code">{copied ? <Check size={16} /> : <Copy size={16} />}</button></div>}
+            {notice && <p className="owner-notice">{notice}</p>}
+          </article>
+        </section>}
+        {activePage === "Add user" && <section className="owner-lower owner-lower-single">
+          <article className="owner-panel">
+            <div className="owner-panel-head"><span className="owner-panel-icon"><Plus size={18} /></span><div><h2>Add user</h2><p>Create a learner account directly on the platform and send the verification email automatically.</p></div></div>
+            <form className="owner-form" onSubmit={createUserAccount}>
+              <div className="assessment-grid">
+                <label className="form-label">Full name<input value={newUserName} onChange={(event) => setNewUserName(event.target.value)} minLength={2} maxLength={80} required placeholder="Jane Doe" /></label>
+                <label className="form-label">Email address<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} required placeholder="learner@example.com" /></label>
+              </div>
+              <div className="assessment-grid">
+                <label className="form-label">Username<input value={newUserUsername} onChange={(event) => setNewUserUsername(event.target.value)} minLength={3} maxLength={30} required placeholder="janedoe" /></label>
+                <label className="form-label">Grade<select value={grade} onChange={(event) => setGrade(event.target.value)}>{gradeOptions.map((gradeLabel) => <option key={gradeLabel} value={gradeLabel}>{gradeLabel}</option>)}</select></label>
+              </div>
+              <div className="assessment-grid">
+                <label className="form-label">Password<input type="password" value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} minLength={8} maxLength={80} required placeholder="Create a password" /></label>
+                <label className="form-label">Confirm password<input type="password" value={newUserPasswordConfirmation} onChange={(event) => setNewUserPasswordConfirmation(event.target.value)} minLength={8} maxLength={80} required placeholder="Confirm password" /></label>
+              </div>
+              <button className="primary-button" type="submit" disabled={busy}><Plus size={15} /> {busy ? "Creating…" : "Create user account"}</button>
+            </form>
+            {error && <p className="dashboard-error" role="alert">{error}</p>}
             {notice && <p className="owner-notice">{notice}</p>}
           </article>
         </section>}

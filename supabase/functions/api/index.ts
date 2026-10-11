@@ -69,7 +69,7 @@ const registerSchema = z.object({
 
 const verifyEmailSchema = z.object({
   email: emailSchema,
-  code: z.string().regex(/^[A-Z0-9]{8}$/).transform((code) => code.toUpperCase()),
+  code: z.string().regex(/^\d{6}$/),
   name: z.string().trim().min(2).max(80).optional(),
   username: usernameSchema.optional(),
   grade: gradeSchema.optional(),
@@ -476,8 +476,9 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       : await service.from("profiles").select("email,active,email_verified").eq("username", identifier).maybeSingle();
     if (profileError) throw new Error(profileError.message);
     const profile = row as { email: string; active: boolean; email_verified: boolean } | null;
-    if (profile && !profile.active) return fail("This account is inactive. Please contact your administrator.", 403);
-    if (profile && !profile.email_verified) {
+    if (!profile) return fail("No account was found. Please register before signing in.", 404);
+    if (!profile.active) return fail("This account is inactive. Please contact your administrator.", 403);
+    if (!profile.email_verified) {
       return fail("Verify your email before signing in. Enter the six-digit code we sent to your inbox.", 403);
     }
     const { data, error } = await authClient().auth.signInWithPassword({
@@ -491,9 +492,6 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       return fail("Email, username, or password is incorrect.", 401);
     }
     if (!data.session || !data.user) return fail("Email, username, or password is incorrect.", 401);
-    if (!profile) {
-      return fail("This verified email has no learner profile yet. Contact platform support to finish setting up the account.", 403);
-    }
     const output = await appSession(data.session, data.user.id);
     await service.from("profiles").update({ last_seen_at: new Date().toISOString() }).eq("id", data.user.id);
     return json(output);

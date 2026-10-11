@@ -160,7 +160,12 @@ const googleLoginLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standa
 const verificationRequestLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: true, legacyHeaders: false });
 const verificationSubmitLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false });
 const verificationCodeLifetimeMs = 10 * 60_000;
+const verificationCodeLength = 6;
 const maxVerificationAttempts = 5;
+
+function generateVerificationCode(): string {
+  return randomInt(0, 10 ** verificationCodeLength).toString().padStart(verificationCodeLength, "0");
+}
 
 function issueToken(user: AuthUser, authVersion = 0): string {
   return jwt.sign({ sub: user.id, role: user.role, ver: authVersion }, jwtSecret!, { expiresIn: "8h", issuer: "jifunze" });
@@ -308,7 +313,7 @@ app.post("/api/auth/register", async (req, res, next) => {
       grade: input.grade,
     } satisfies AuthUser;
     const passwordHash = await bcrypt.hash(input.password, 12);
-    const code = randomInt(0, 100_000).toString().padStart(5, "0");
+    const code = generateVerificationCode();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + verificationCodeLifetimeMs).toISOString();
     let created = false;
@@ -360,7 +365,7 @@ app.post("/api/auth/register", async (req, res, next) => {
 app.post("/api/auth/verify-email", verificationSubmitLimit, (req, res) => {
   const input = validateBody(z.object({
     email: emailSchema,
-    code: z.string().regex(/^\d{5}$/),
+    code: z.string().regex(new RegExp(`^\\d{${verificationCodeLength}}$`)),
   }), req, res);
   if (!input) return;
 
@@ -424,7 +429,7 @@ app.post("/api/auth/resend-verification", verificationRequestLimit, async (req, 
     WHERE u.email = ? COLLATE NOCASE AND u.email_verified = 0 AND u.active = 1
   `).get(input.email) as { id: string; email: string; created_at: string | null } | undefined;
   if (user && (!user.created_at || Date.now() - new Date(user.created_at).getTime() >= 60_000)) {
-    const code = randomInt(0, 100_000).toString().padStart(5, "0");
+    const code = generateVerificationCode();
     const now = new Date();
     db.prepare(`
       INSERT INTO email_verifications (user_id, code_hash, expires_at, attempts, created_at)
@@ -553,8 +558,12 @@ async function handleLogin(req: Request, res: Response, next: NextFunction): Pro
     const row = db.prepare(
       "SELECT id, name, username, user_code AS userCode, password_hash, role, grade, active, auth_version, email_verified FROM users WHERE email = ? COLLATE NOCASE OR username = ? COLLATE NOCASE",
     ).get(input.identifier, input.identifier) as (AuthUser & { password_hash: string; active: number; auth_version: number; email_verified: number }) | undefined;
-    const valid = row ? await bcrypt.compare(input.password, row.password_hash) : false;
-    if (!row || !valid || !row.active) {
+    if (!row) {
+      res.status(404).json({ error: "No account was found. Please register before signing in." });
+      return;
+    }
+    const valid = await bcrypt.compare(input.password, row.password_hash);
+    if (!valid || !row.active) {
       res.status(401).json({ error: "Email, username, or password is incorrect." });
       return;
     }
@@ -1075,6 +1084,84 @@ app.get("/api/admin/students", authRequired, roleRequired("admin"), (_req, res) 
     ORDER BY created_at DESC, name COLLATE NOCASE
   `).all();
   res.json({ students });
+});
+
+app.post("/api/admin/users", authRequired, roleRequired("admin"), async (req: AuthRequest, res, next) => {
+  const input = validateBody(registerSchema, req, res);
+  if (!input) return;
+  if (!emailDeliveryConfigured) {
+    res.status(503).json({ error: `Email verification is not configured yet. Contact ${supportAddress} for help.` });
+    return;
+  }
+
+  try {
+    const existingEmail = db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(input.email);
+    if (existingEmail) {
+      res.status(409).json({ error: "That email address is already registered on the platform." });
+      return;
+    }
+    const existingUsername = db.prepare("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE").get(input.username);
+    if (existingUsername) {
+      res.status(409).json({ error: "That username is already taken. Choose another username." });
+      return;
+    }
+
+    const user = {
+      id: createId(),
+      name: input.name,
+      username: input.username,
+      userCode: createStudentCode(),
+      role: "student",
+      grade: input.grade,
+    } satisfies AuthUser;
+    const passwordHash = await bcrypt.hash(input.password, 12);
+    const code = generateVerificationCode();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + verificationCodeLifetimeMs).toISOString();
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        runInTransaction(() => {
+          db.prepare(
+            "INSERT INTO users (id, name, username, password_hash, email, email_verified, user_code, role, grade) VALUES (?, ?, ?, ?, ?, 0, ?, 'student', ?)",
+          ).run(user.id, user.name, user.username, passwordHash, input.email, user.userCode, user.grade);
+          db.prepare(
+            "INSERT INTO email_verifications (user_id, code_hash, expires_at, attempts, created_at) VALUES (?, ?, ?, 0, ?)",
+          ).run(user.id, hashVerificationCode(code), expiresAt, now.toISOString());
+        });
+        break;
+      } catch (error) {
+        if (error instanceof Error && (error.message.includes("idx_users_user_code_unique") || error.message.includes("users.user_code")) && attempt < 4) {
+          user.userCode = createStudentCode();
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    try {
+      await sendVerificationEmail(input.email, code);
+    } catch (error) {
+      db.prepare("DELETE FROM users WHERE id = ? AND email_verified = 0").run(user.id);
+      console.error("Admin-created user verification email delivery failed:", error instanceof Error ? error.name : "Unknown error");
+      res.status(503).json({ error: `The account was created, but the verification email could not be sent. Please contact ${supportAddress}.` });
+      return;
+    }
+
+    res.status(201).json({
+      message: `A learner account for ${input.name} was created. A verification code has been sent to ${input.email}.`,
+      user: {
+        id: user.id,
+        name: user.name,
+        username: user.username,
+        email: input.email,
+        grade: user.grade,
+        userCode: user.userCode,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.delete("/api/admin/students/:id", authRequired, roleRequired("admin"), (req: AuthRequest, res) => {

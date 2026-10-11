@@ -45,19 +45,21 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   const verifyUrl = `${appUrl}/?verifyEmail=${encodeURIComponent(email)}`;
   const content = `<p style="margin:0 0 14px;color:#172554;font-size:16px;font-weight:700">Welcome to VORTEX LEARNING!</p>
     <p style="margin:0 0 16px;color:#475569;font-size:15px;line-height:1.7">Thank you for creating your account. To complete your registration and secure your account, please enter the verification code below on the VORTEX LEARNING website.</p>
-    <div style="margin:22px 0;padding:18px 12px;border:1px solid #BFDBFE;border-radius:10px;background:#EFF6FF;text-align:center">
-      <span style="display:block;color:#0F766E;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase">Your 5-digit verification code</span>
-      <strong style="display:block;margin-top:8px;color:#2563EB;font-size:36px;font-weight:800;letter-spacing:10px;line-height:1.2">${code}</strong>
+    <div style="margin:22px 0;padding:18px 12px;border:1px solid #BFDBFE;border-radius:12px;background:linear-gradient(180deg,#EFF6FF,#F8FAFC);text-align:center;box-shadow:inset 0 1px 0 rgba(255,255,255,0.8)">
+      <span style="display:block;color:#0F766E;font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase">Your 6-digit verification code</span>
+      <div style="margin-top:12px;padding:14px 18px;border-radius:10px;background:#0F172A;border:1px solid #1E293B;display:inline-block;min-width:230px">
+        <strong style="display:block;color:#F8FAFC;font-size:38px;font-weight:900;letter-spacing:12px;line-height:1.2">${code}</strong>
+      </div>
     </div>
     <p style="margin:0 0 20px;color:#475569;font-size:14px;line-height:1.6">This code expires in 10 minutes and can only be used once.</p>
-    <p style="margin:0 0 22px;text-align:center"><a href="${verifyUrl}" style="display:inline-block;padding:13px 24px;border-radius:7px;background:#0F766E;color:#FFFFFF;font-size:15px;font-weight:700;text-decoration:none">Verify My Email</a></p>
+    <p style="margin:0 0 22px;text-align:center"><a href="${verifyUrl}" style="display:inline-block;padding:14px 28px;border-radius:10px;background:#0F766E;color:#FFFFFF;font-size:15px;font-weight:800;text-decoration:none;box-shadow:0 8px 20px rgba(15,118,110,0.2)">Verify My Email</a></p>
     <p style="margin:0;color:#64748B;font-size:13px;line-height:1.7">If you did not create a VORTEX LEARNING account, you can safely ignore this email.</p>`;
   await createTransporter().sendMail({
     from: { name: "VORTEX LEARNING", address: mailFrom },
     to: email,
     replyTo: supportEmail,
     subject: "Verify your VORTEX LEARNING email",
-    text: `Welcome to VORTEX LEARNING!\n\nThank you for creating your account. Enter this 5-digit verification code on the VORTEX LEARNING website: ${code}\n\nThe code expires in 10 minutes and can only be used once.\n\nOpen the verification page: ${verifyUrl}\n\nIf you did not create a VORTEX LEARNING account, you can safely ignore this email.\n\nVORTEX LEARNING Support\nLearn. Grow. Achieve.\n${supportEmail}`,
+    text: `Welcome to VORTEX LEARNING!\n\nThank you for creating your account. Enter this 6-digit verification code on the VORTEX LEARNING website: ${code}\n\nThe code expires in 10 minutes and can only be used once.\n\nOpen the verification page: ${verifyUrl}\n\nIf you did not create a VORTEX LEARNING account, you can safely ignore this email.\n\nVORTEX LEARNING Support\nLearn. Grow. Achieve.\n${supportEmail}`,
     html: emailFrame("Verify your email address", content),
     attachments: [brandLogoAttachment()],
   });
