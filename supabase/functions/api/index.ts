@@ -69,7 +69,7 @@ const registerSchema = z.object({
 
 const verifyEmailSchema = z.object({
   email: emailSchema,
-  code: z.string().regex(/^\d{6}$/),
+  code: z.string().regex(/^[A-Z0-9]{8}$/).transform((code) => code.toUpperCase()),
   name: z.string().trim().min(2).max(80).optional(),
   username: usernameSchema.optional(),
   grade: gradeSchema.optional(),
