@@ -69,7 +69,6 @@ const forgotPasswordSchema = z.object({
 
 const resetPasswordSchema = z.object({
   token: z.string().min(20).max(8192),
-  refreshToken: z.string().min(20).max(8192),
   password: passwordSchema,
   passwordConfirmation: passwordSchema,
 }).refine((input) => input.password === input.passwordConfirmation, {
@@ -429,12 +428,11 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     const parsed = resetPasswordSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     const client = authClient();
-    const { data, error } = await client.auth.setSession({
-      access_token: parsed.data.token,
-      refresh_token: parsed.data.refreshToken,
-    });
+    const { data, error } = await client.auth.getUser(parsed.data.token);
     if (error || !data.user) return fail("This reset link is invalid or has expired. Request a new one.", 400);
-    const { error: updateError } = await client.auth.updateUser({ password: parsed.data.password });
+    const { error: updateError } = await service.auth.admin.updateUserById(data.user.id, {
+      password: parsed.data.password,
+    });
     if (updateError) return fail("The password could not be reset. Please request a new recovery email.", 400);
     return json({ message: "Your password has been reset. You can now sign in with your new password." });
   }

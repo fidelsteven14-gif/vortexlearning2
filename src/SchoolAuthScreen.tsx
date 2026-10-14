@@ -40,7 +40,6 @@ function recoveryTokens() {
   const recoveryError = hash.get("error_code") ?? query.get("error_code") ?? hash.get("error") ?? query.get("error");
   return {
     token: query.get("token") ?? query.get("resetToken") ?? query.get("access_token") ?? hash.get("access_token") ?? "",
-    refreshToken: query.get("refresh_token") ?? hash.get("refresh_token") ?? "",
     error: recoveryError ? "This password reset link could not be validated. It may have expired or already been used. Request a new link below." : "",
   };
 }
@@ -164,7 +163,6 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
           method: "POST",
           body: JSON.stringify({
             token: recovery.token,
-            refreshToken: recovery.refreshToken,
             password,
             passwordConfirmation: confirmation,
           }),
