@@ -152,7 +152,7 @@ const schoolInputSchema = z.object({
   principalName: z.string().trim().max(160).optional(),
   principalEmail: emailSchema.optional().or(z.literal("")),
   administratorName: z.string().trim().min(2).max(160),
-  administratorEmail: emailSchema,
+  administratorPhone: phoneSchema,
 });
 const schoolClassInputSchema = z.object({
   grade: gradeSchema,
@@ -204,6 +204,9 @@ const reportReleaseSchema = z.object({
   principalRemarks: z.string().trim().max(1500).default(""),
   classTeacherRemarks: z.string().trim().max(1500).default(""),
 });
+const subjectRemarkSchema = z.object({
+  remark: z.string().trim().max(1500),
+});
 const studentLookupSchema = z.object({
   schoolName: schoolNameSchema,
   assessmentNumber: z.string().trim().min(2).max(40),
@@ -228,9 +231,9 @@ const teacherSignupSchema = z.object({
   path: ["passwordConfirmation"],
 });
 const schoolLoginSchema = z.object({
-  role: z.enum(["student", "teacher", "staff"]),
+  role: z.enum(["student", "teacher"]),
   schoolName: schoolNameSchema.optional(),
-  identifier: z.string().trim().min(2).max(40),
+  identifier: z.string().trim().min(2).max(254),
   password: z.string().min(1).max(72),
 });
 const onboardingVerifySchema = z.object({
@@ -662,18 +665,34 @@ async function onboardingRoutes(request: Request, path: string): Promise<Respons
     const parsed = schoolLoginSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     const input = parsed.data;
-    const school = input.schoolName ? await schoolByName(input.schoolName) : null;
-    if (input.role !== "staff" && !school) return fail("School, account number, or password is incorrect.", 401);
+    const platformSchoolName = input.schoolName?.trim().replace(/\s+/g, "").toLowerCase() === "vortexlearning";
+    const isPlatformAdminLogin = input.role === "teacher" && (!input.schoolName || platformSchoolName);
+    const school = input.schoolName && !platformSchoolName ? await schoolByName(input.schoolName) : null;
+    if (input.role === "student" && !school) return fail("School, account number, or password is incorrect.", 401);
     let email: string | null = null;
-    if (input.role === "staff") {
+    if (isPlatformAdminLogin) {
       const normalizedEmail = emailSchema.safeParse(input.identifier);
       if (normalizedEmail.success) {
         const { data, error } = await service.from("profiles").select("email,active,email_verified,role")
-          .eq("email", normalizedEmail.data).in("role", ["super_admin", "school_admin", "class_coordinator", "admin"])
+          .eq("email", normalizedEmail.data).in("role", ["super_admin", "admin"])
           .maybeSingle();
         if (error) throw new Error(error.message);
         const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
         if (profile?.active) email = profile.email;
+      } else {
+        const normalizedPhone = phoneSchema.safeParse(input.identifier);
+        if (normalizedPhone.success) {
+          const phoneCandidates = [...new Set([
+            normalizedPhone.data,
+            `+${normalizedPhone.data}`,
+            input.identifier.replace(/\D/g, ""),
+          ])];
+          const { data, error } = await service.from("profiles").select("email,active,email_verified,role")
+            .in("phone_number", phoneCandidates).in("role", ["super_admin", "admin"]).maybeSingle();
+          if (error) throw new Error(error.message);
+          const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
+          if (profile?.active && profile.email_verified) email = profile.email;
+        }
       }
     } else if (input.role === "student") {
       const { data, error } = await service.from("profiles").select("email,active,email_verified")
@@ -684,12 +703,12 @@ async function onboardingRoutes(request: Request, path: string): Promise<Respons
       if (profile?.active && profile.email_verified) email = profile.email;
     } else {
       const normalizedPhone = phoneSchema.safeParse(input.identifier);
-      if (normalizedPhone.success) {
-        const { data, error } = await service.from("teacher_records").select("profiles!inner(email,active,email_verified)")
-          .eq("school_id", school!.id).eq("phone_normalized", normalizedPhone.data)
-          .eq("profiles.role", "teacher").maybeSingle();
+      if (school && normalizedPhone.success) {
+        const { data, error } = await service.from("teacher_records").select("profiles!inner(email,active,email_verified,role)")
+          .eq("school_id", school.id).eq("phone_normalized", normalizedPhone.data)
+          .in("profiles.role", ["teacher", "class_coordinator", "school_admin"]).maybeSingle();
         if (error) throw new Error(error.message);
-        const profile = (data as { profiles: { email: string; active: boolean; email_verified: boolean } } | null)?.profiles;
+        const profile = (data as { profiles: { email: string; active: boolean; email_verified: boolean; role: string } } | null)?.profiles;
         if (profile?.active && profile.email_verified) email = profile.email;
       }
     }
@@ -923,33 +942,34 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     }).select("id,name,examination_code,location").single();
     if (error?.code === "23505") return fail("A school with that name or examination code is already registered.", 409);
     if (error) throw new Error(error.message);
-    const { data: invited, error: inviteError } = await service.auth.admin.inviteUserByEmail(input.administratorEmail, {
-      data: { name: input.administratorName },
-    });
-    if (inviteError || !invited.user) {
-      await service.from("schools").delete().eq("id", schoolId);
-      if (inviteError) console.error("School administrator invitation failed:", inviteError.name);
-      return fail("The school was not created because its administrator invitation could not be sent.", 503);
-    }
-    const { error: adminProfileError } = await service.from("profiles").insert({
-      id: invited.user.id,
-      name: input.administratorName,
-      username: null,
-      email: input.administratorEmail,
-      email_verified: false,
-      user_code: null,
-      role: "school_admin",
+    const { data: administrator, error: administratorError } = await service.from("teacher_records").insert({
       school_id: schoolId,
-      active: true,
+      account_role: "school_admin",
+      full_name: input.administratorName,
+      phone_number: input.administratorPhone,
+      phone_normalized: input.administratorPhone,
+      created_by: profile.id,
+    }).select("id").single();
+    if (administratorError) {
+      const { error: cleanupError } = await service.from("schools").delete().eq("id", schoolId);
+      if (cleanupError) console.error("School cleanup after administrator creation failure failed:", cleanupError.message);
+      if (administratorError.code === "23505") return fail("That administrator phone number is already registered for this school.", 409);
+      throw new Error(administratorError.message);
+    }
+    const activationCode = createTeacherActivationCode();
+    const { error: codeError } = await service.from("teacher_activation_codes").insert({
+      teacher_id: administrator.id,
+      code_hash: await digestHex(activationCode),
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString(),
+      created_by: profile.id,
     });
-    if (adminProfileError) {
-      await service.auth.admin.deleteUser(invited.user.id);
-      await service.from("schools").delete().eq("id", schoolId);
-      if (adminProfileError.code === "23505") return fail("That administrator email already belongs to another platform account.", 409);
-      throw new Error(adminProfileError.message);
+    if (codeError) {
+      const { error: cleanupError } = await service.from("schools").delete().eq("id", schoolId);
+      if (cleanupError) console.error("School cleanup after activation code failure failed:", cleanupError.message);
+      throw new Error(codeError.message);
     }
     await recordAdminAction(profile.id, "school_created", "school", schoolId, { name: input.name });
-    return json({ school: data, administratorInvitationSent: true }, 201);
+    return json({ school: data, administratorActivationCode: activationCode }, 201);
   }
 
   if (path === "/api/school/overview" && request.method === "GET") {
@@ -1241,9 +1261,113 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     return json({ teacher, activationCode }, 201);
   }
 
+  if (path === "/api/school/my-signature" && request.method === "PUT") {
+    if (profile.role !== "teacher") return fail("Only a teacher can upload their own signature.", 403);
+    const teacher = await currentTeacher();
+    if (!teacher) return fail("Your school teacher record could not be found.", 404);
+    const form = await request.formData();
+    const file = form.get("file");
+    if (!(file instanceof File) || file.size < 8 || file.size > 2 * 1024 * 1024) {
+      return fail("Choose a signature image no larger than 2 MB.", 413);
+    }
+    if (!["image/png", "image/jpeg"].includes(file.type)) return fail("Signatures must be PNG or JPEG images.", 415);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const png = bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte);
+    const jpg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if ((file.type === "image/png" && !png) || (file.type === "image/jpeg" && !jpg)) {
+      return fail("The selected file does not match its declared image type.", 415);
+    }
+    const { data: teacherRow, error: teacherError } = await service.from("teacher_records")
+      .select("class_teacher_signature_storage_key").eq("id", teacher.id).single();
+    if (teacherError) throw new Error(teacherError.message);
+    const storageKey = `${profile.school_id}/signatures/${teacher.id}-${randomId()}.${file.type === "image/png" ? "png" : "jpg"}`;
+    const { error: uploadError } = await service.storage.from("school-documents").upload(storageKey, bytes, {
+      contentType: file.type, upsert: false,
+    });
+    if (uploadError) throw new Error(uploadError.message);
+    const { error: updateError } = await service.from("teacher_records")
+      .update({ class_teacher_signature_storage_key: storageKey }).eq("id", teacher.id);
+    if (updateError) {
+      const { error: cleanupError } = await service.storage.from("school-documents").remove([storageKey]);
+      if (cleanupError) console.error("New signature cleanup failed:", cleanupError.message);
+      throw new Error(updateError.message);
+    }
+    if (teacherRow.class_teacher_signature_storage_key) {
+      const { error: cleanupError } = await service.storage.from("school-documents")
+        .remove([teacherRow.class_teacher_signature_storage_key]);
+      if (cleanupError) {
+        console.error("Previous signature cleanup failed:", cleanupError.message);
+        return fail("Your signature was updated, but the previous file could not be removed.", 500);
+      }
+    }
+    await recordAdminAction(profile.id, "teacher_signature_updated", "teacher_record", teacher.id);
+    return json({ updated: true });
+  }
+
   if (path === "/api/school/result-windows" && request.method === "GET") {
     const windows = await activeWindowIds(profile.school_id!);
     return json({ windows });
+  }
+
+  const classRemarkRoute = path.match(/^\/api\/school\/result-windows\/([^/]+)\/classes\/([^/]+)\/remarks$/);
+  if (classRemarkRoute && request.method === "PUT") {
+    if (profile.role !== "teacher") return fail("Only the assigned Class Teacher can record class remarks.", 403);
+    const parsed = subjectRemarkSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const windowId = decodeURIComponent(classRemarkRoute[1]);
+    const classId = decodeURIComponent(classRemarkRoute[2]);
+    const [windowResult, classResult] = await Promise.all([
+      service.from("result_windows").select("id,grade,status,deadline").eq("id", windowId)
+        .eq("school_id", profile.school_id!).maybeSingle(),
+      service.from("school_classes").select("id,grade,class_teacher_id").eq("id", classId)
+        .eq("school_id", profile.school_id!).maybeSingle(),
+    ]);
+    if (windowResult.error) throw new Error(windowResult.error.message);
+    if (classResult.error) throw new Error(classResult.error.message);
+    if (!windowResult.data || !classResult.data || windowResult.data.grade !== classResult.data.grade) {
+      return fail("This class does not belong to the selected results window.", 404);
+    }
+    if (classResult.data.class_teacher_id !== profile.id) return fail("You are not the Class Teacher for this class.", 403);
+    if (!["open", "coordinator_review"].includes(windowResult.data.status)) return fail("Class remarks can no longer be changed.", 409);
+    const { error } = await service.from("class_teacher_remarks").upsert({
+      window_id: windowId, class_id: classId, teacher_id: profile.id, remark: parsed.data.remark,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "window_id,class_id" });
+    if (error) throw new Error(error.message);
+    return json({ saved: true });
+  }
+
+  const subjectRemarkRoute = path.match(/^\/api\/school\/result-windows\/([^/]+)\/classes\/([^/]+)\/subjects\/([^/]+)\/remarks$/);
+  if (subjectRemarkRoute && request.method === "PUT") {
+    if (profile.role !== "teacher") return fail("Only an assigned subject teacher can record subject remarks.", 403);
+    const parsed = subjectRemarkSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const windowId = decodeURIComponent(subjectRemarkRoute[1]);
+    const classId = decodeURIComponent(subjectRemarkRoute[2]);
+    const subjectId = decodeURIComponent(subjectRemarkRoute[3]);
+    const teacher = await currentTeacher();
+    if (!teacher) return fail("Your school teacher record could not be found.", 404);
+    const assignment = (await teacherAssignments(teacher.id))
+      .some((item) => item.class_id === classId && item.subject_id === subjectId);
+    if (!assignment) return fail("You are not assigned to this class and subject.", 403);
+    const [windowResult, classResult] = await Promise.all([
+      service.from("result_windows").select("id,grade,status").eq("id", windowId)
+        .eq("school_id", profile.school_id!).maybeSingle(),
+      service.from("school_classes").select("id,grade").eq("id", classId)
+        .eq("school_id", profile.school_id!).maybeSingle(),
+    ]);
+    if (windowResult.error) throw new Error(windowResult.error.message);
+    if (classResult.error) throw new Error(classResult.error.message);
+    if (!windowResult.data || !classResult.data || windowResult.data.grade !== classResult.data.grade) {
+      return fail("This class does not belong to the selected results window.", 404);
+    }
+    if (!["open", "coordinator_review"].includes(windowResult.data.status)) return fail("Subject remarks can no longer be changed.", 409);
+    const { error } = await service.from("subject_teacher_remarks").upsert({
+      window_id: windowId, class_id: classId, subject_id: subjectId, teacher_id: profile.id,
+      remark: parsed.data.remark, updated_at: new Date().toISOString(),
+    }, { onConflict: "window_id,class_id,subject_id" });
+    if (error) throw new Error(error.message);
+    return json({ saved: true });
   }
 
   const resultWindowMatch = path.match(/^\/api\/school\/result-windows\/([^/]+)(?:\/(submit|release))?$/);
@@ -1262,19 +1386,27 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (classesResult.error) throw new Error(classesResult.error.message);
     const classes = classesResult.data as Array<{ id: string; class_teacher_id: string | null; coordinator_id: string | null; stream: string }>;
     let visibleClassIds = classes.map(({ id }) => id);
-    let allowedSubjectIds: Set<string> | null = null;
+    let classTeacherClassIds = new Set<string>();
+    let allowedAssignmentKeys: Set<string> | null = null;
     if (profile.role === "class_coordinator") {
       visibleClassIds = classes.filter(({ coordinator_id }) => coordinator_id === profile.id).map(({ id }) => id);
     } else if (profile.role === "teacher") {
       const classTeacherIds = classes.filter(({ class_teacher_id }) => class_teacher_id === profile.id).map(({ id }) => id);
       const assignments = teacherRecord ? await teacherAssignments(teacherRecord.id) : [];
+      classTeacherClassIds = new Set(classTeacherIds);
       const classIds = [...new Set([...classTeacherIds, ...assignments.map(({ class_id }) => class_id)])];
       visibleClassIds = classIds.filter((id) => classes.some((row) => row.id === id));
-      allowedSubjectIds = new Set(assignments.map(({ subject_id }) => subject_id));
+      allowedAssignmentKeys = new Set(assignments.map(({ class_id, subject_id }) => `${class_id}:${subject_id}`));
     } else if (profile.role !== "school_admin") {
       return fail("You do not have permission to view these results.", 403);
     }
-    if (!visibleClassIds.length) return json({ window, results: [] });
+    if (!visibleClassIds.length) return json({ window, classRemarks: [], subjectRemarks: [], results: [] });
+    const [classRemarkResult, subjectRemarkResult] = await Promise.all([
+      service.from("class_teacher_remarks").select("class_id,remark").eq("window_id", windowId).in("class_id", visibleClassIds),
+      service.from("subject_teacher_remarks").select("class_id,subject_id,remark").eq("window_id", windowId).in("class_id", visibleClassIds),
+    ]);
+    if (classRemarkResult.error) throw new Error(classRemarkResult.error.message);
+    if (subjectRemarkResult.error) throw new Error(subjectRemarkResult.error.message);
     const { data: rosterRows, error: rosterError } = await service.from("student_rosters")
       .select("id,full_name,assessment_number,class_id,student_roster_subjects(school_subjects!inner(id,name,max_marks))")
       .in("class_id", visibleClassIds);
@@ -1288,10 +1420,17 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       .eq("window_id", windowId).in("roster_id", rosters.map(({ id }) => id));
     if (resultsError) throw new Error(resultsError.message);
     const rows = resultRows as Array<{ id: string; roster_id: string; subject_id: string; mark: number | null; result_code: string; entered_by: string | null }>;
-    return json({ window, results: rosters.flatMap((roster) => {
+    return json({
+      window,
+      classRemarks: classRemarkResult.data,
+      subjectRemarks: subjectRemarkResult.data,
+      results: rosters.flatMap((roster) => {
       const classRow = classes.find(({ id }) => id === roster.class_id);
       return roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects)
-        .filter((schoolSubject) => !allowedSubjectIds || allowedSubjectIds.has(schoolSubject.id))
+        .filter((schoolSubject) => !allowedAssignmentKeys
+          || profile.role === "school_admin" || profile.role === "class_coordinator"
+          || classTeacherClassIds.has(roster.class_id)
+          || allowedAssignmentKeys.has(`${roster.class_id}:${schoolSubject.id}`))
         .map((school_subjects) => ({
           rosterId: roster.id,
           studentName: roster.full_name,
@@ -1301,11 +1440,14 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
           subjectId: school_subjects.id,
           subjectName: school_subjects.name,
           maxMarks: school_subjects.max_marks,
+          canEditSubjectRemark: profile.role === "teacher"
+            && Boolean(allowedAssignmentKeys?.has(`${roster.class_id}:${school_subjects.id}`)),
           ...(rows.find((row) => row.roster_id === roster.id && row.subject_id === school_subjects.id)
             ? { result: rows.find((row) => row.roster_id === roster.id && row.subject_id === school_subjects.id) }
             : {}),
         }));
-    }) });
+      }),
+    });
   }
 
   const resultEntry = path.match(/^\/api\/school\/result-windows\/([^/]+)\/students\/([^/]+)\/subjects\/([^/]+)$/);
@@ -1423,7 +1565,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     const { data: resultWindow, error } = await service.from("result_windows").select("id,school_id,grade,status")
       .eq("id", windowId).eq("school_id", profile.school_id!).maybeSingle();
     if (error) throw new Error(error.message);
-    if (!resultWindow || resultWindow.grade !== profile.grade) return fail("This results window is outside your assigned grade.", 403);
+    if (!resultWindow) return fail("This results window was not found.", 404);
     if (resultWindow.status !== "coordinator_review") return fail("This results window is not ready for coordinator submission.", 409);
     const { data: classes, error: classesError } = await service.from("school_classes").select("id")
       .eq("school_id", profile.school_id!).eq("grade", resultWindow.grade).eq("coordinator_id", profile.id);
@@ -1480,6 +1622,22 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       name: string; examination_code: string; logo_storage_key: string | null;
       principal_signature_storage_key: string | null; email: string | null; po_box: string | null; principal_name: string | null;
     };
+    const classTeacherIds = [...new Set(classes.map(({ class_teacher_id }) => class_teacher_id).filter((id): id is string => Boolean(id)))];
+    const [classRemarkResult, subjectRemarkResult, classTeacherResult] = await Promise.all([
+      service.from("class_teacher_remarks").select("class_id,remark").eq("window_id", windowId).in("class_id", classIds),
+      service.from("subject_teacher_remarks").select("class_id,subject_id,remark").eq("window_id", windowId).in("class_id", classIds),
+      classTeacherIds.length
+        ? service.from("teacher_records").select("profile_id,full_name,class_teacher_signature_storage_key").in("profile_id", classTeacherIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (classRemarkResult.error) throw new Error(classRemarkResult.error.message);
+    if (subjectRemarkResult.error) throw new Error(subjectRemarkResult.error.message);
+    if (classTeacherResult.error) throw new Error(classTeacherResult.error.message);
+    const classRemarks = new Map((classRemarkResult.data as Array<{ class_id: string; remark: string }>).map((row) => [row.class_id, row.remark]));
+    const subjectRemarks = new Map((subjectRemarkResult.data as Array<{ class_id: string; subject_id: string; remark: string }>).map((row) => [`${row.class_id}:${row.subject_id}`, row.remark]));
+    const classTeachers = new Map((classTeacherResult.data as Array<{
+      profile_id: string; full_name: string; class_teacher_signature_storage_key: string | null;
+    }>).map((row) => [row.profile_id, row]));
     const deniedCount = { count: 0 };
     const performances = rosters.flatMap((roster) => {
       const rosterSubjects = roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects);
@@ -1559,6 +1717,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       draw(`Stream position: ${streamPosition ?? "N/A"} | Grade position: ${gradePosition ?? "N/A"} | Total: ${ownPerformance?.score ?? 0}/${ownPerformance?.maxScore ?? 0}`);
       draw("SUBJECT RESULTS", 12);
       for (const row of rows) draw(row);
+      for (const { subject } of subjectResults) {
+        const remark = subjectRemarks.get(`${roster.class_id}:${subject.id}`);
+        if (remark) draw(`${subject.name} teacher's remarks: ${remark}`, 8);
+      }
       draw("PERFORMANCE GRAPH", 12);
       const chartX = 64;
       const chartY = Math.max(80, y - 100);
@@ -1586,11 +1748,14 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       draw("PREVIOUS TERMS", 12);
       for (const item of history) draw(item, 8);
       draw(`Principal's remarks: ${parsed.data.principalRemarks}`, 9);
-      draw(`Class teacher's remarks: ${parsed.data.classTeacherRemarks}`, 9);
-      const principalSignaturePage = page;
-      const principalSignatureY = y - 10;
+      draw(`Class teacher's remarks: ${classRemarks.get(roster.class_id) || parsed.data.classTeacherRemarks}`, 9);
       draw(`Principal: ${school.principal_name ?? "________________"}  Signature: __________________`, 9);
-      draw("Class Teacher: __________________  Signature: __________________", 9);
+      const principalSignaturePage = page;
+      const principalSignatureY = y + 5;
+      const classTeacher = classTeachers.get(classRecord?.class_teacher_id ?? "");
+      draw(`Class Teacher: ${classTeacher?.full_name ?? "________________"}  Signature: __________________`, 9);
+      const classTeacherSignaturePage = page;
+      const classTeacherSignatureY = y + 5;
       coverPage.drawText("VORTEX LEARNING", { x: 48, y: 28, size: 8, font, color: rgb(0.12, 0.2, 0.23) });
       const embedSchoolImage = async (storageKey: string) => {
         const { data: imageData, error: imageError } = await service.storage.from("school-documents").download(storageKey);
@@ -1606,7 +1771,11 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       }
       if (school.principal_signature_storage_key) {
         const signature = await embedSchoolImage(school.principal_signature_storage_key);
-        principalSignaturePage.drawImage(signature, { x: 435, y: principalSignatureY - 12, width: 100, height: 28 });
+        principalSignaturePage.drawImage(signature, { x: 458, y: principalSignatureY, width: 80, height: 24 });
+      }
+      if (classTeacher?.class_teacher_signature_storage_key) {
+        const signature = await embedSchoolImage(classTeacher.class_teacher_signature_storage_key);
+        classTeacherSignaturePage.drawImage(signature, { x: 458, y: classTeacherSignatureY, width: 80, height: 24 });
       }
       const pdfBytes = await pdf.save();
       const storageKey = `${profile.school_id}/${windowId}/${roster.id}/${randomId()}.pdf`;

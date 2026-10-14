@@ -516,7 +516,11 @@ assessment number for students, and school name plus the registered phone
 number for teachers. Students activate with the guardian phone recorded by
 their Class Teacher, confirm the roster details, set an email and password,
 and verify that email. A School Administrator hands teachers a single-use
-activation code. Administrators sign in with their verified email.
+activation code. School staff, including School Administrators, use the
+shared Teacher / Staff sign-in. The platform Super Admin also uses that
+sign-in, entering "Vortex Learning" as the school name and their registered
+Super Admin phone number and password. The system identifies the platform
+role from the account. There is no separate Administrator sign-in option.
 
 The Super Admin records the school name, official examination code, location,
 logo, principal/head teacher, and School Administrator. The Super Admin

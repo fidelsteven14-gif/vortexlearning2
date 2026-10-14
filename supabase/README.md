@@ -9,10 +9,10 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
 3. In Supabase Authentication → URL Configuration, set the **Site URL** to `https://fidelsteven14-gif.github.io/vortexlearning2/` and add `https://fidelsteven14-gif.github.io/vortexlearning2/**` to the **Redirect URLs** allow list. Also allow `http://localhost:5173/**` and `http://localhost:4173/**` for local development. Remove any stale `http://localhost:3000` Site URL or redirect entry; otherwise recovery links may send production users to localhost.
 4. In Authentication → Email Templates, paste `templates/confirm-sign-up.html` into the **Confirm sign up** body and `templates/reset-password.html` into the **Reset password** body. Set the subjects to `VERIFY YOUR EMAIL — Vortex Learning` and `RESET YOUR PASSWORD — Vortex Learning`. These are live Supabase dashboard settings and are not changed by deploying migrations or the Edge Function. The confirmation email displays the code in large type and its button opens the app with the code prefilled. Email clients do not allow scripts to copy text to the clipboard, so the working **Copy code** button is in the verification form. Configure custom SMTP for authentication emails; Supabase's default sender is restricted and not suitable for public sign-ups.
 5. The Pages workflow defaults `VITE_API_BASE_URL` to `https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1`. If you later move the API, set the GitHub repository variable `VITE_API_BASE_URL` to override it, then run the **Deploy frontend to GitHub Pages** workflow.
-6. Local SQLite accounts and passwords are not migrated to Supabase. To bootstrap the first Super Admin, first create and confirm the administrator's email account in Supabase Authentication → Users, then run this in the SQL editor, replacing the placeholder with that exact email:
+6. Local SQLite accounts and passwords are not migrated to Supabase. To bootstrap the first Super Admin, first create and confirm the administrator's email account in Supabase Authentication → Users, then run this in the SQL editor, replacing the email and phone placeholders with the account details:
 
    ```sql
-   insert into public.profiles (id, name, username, email, email_verified, role, active)
+   insert into public.profiles (id, name, username, email, email_verified, role, active, phone_number)
    select
      u.id,
      coalesce(nullif(trim(u.raw_user_meta_data ->> 'name'), ''), 'Platform Administrator'),
@@ -20,15 +20,17 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
      lower(u.email),
      true,
      'super_admin',
-     true
+     true,
+     'YOUR_ADMIN_PHONE'
    from auth.users u
    where lower(u.email) = lower('YOUR_ADMIN_EMAIL')
      and u.email_confirmed_at is not null
    on conflict (id) do update
-     set role = 'super_admin', active = true, email_verified = true;
+     set role = 'super_admin', active = true, email_verified = true,
+         phone_number = excluded.phone_number;
    ```
 
-   Confirm that the query affected one row. Do not put an administrator password in SQL or source control.
+   Confirm that the query affected one row. The Super Admin signs in using the shared Teacher / Staff flow, school name `Vortex Learning`, this registered phone number, and the password set in Supabase Authentication. Do not put an administrator password in SQL or source control.
 
 ## Verification and email behavior
 

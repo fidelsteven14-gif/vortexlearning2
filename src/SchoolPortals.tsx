@@ -24,8 +24,14 @@ type ManagedReport = {
 type ResultWindow = { id: string; grade: string; term: number; half: string; deadline: string; status: string };
 type ResultEntry = {
   rosterId: string; studentName: string; assessmentNumber: string; classId: string; stream: string;
-  subjectId: string; subjectName: string; maxMarks: number;
+  subjectId: string; subjectName: string; maxMarks: number; canEditSubjectRemark?: boolean;
   result?: { id: string; mark: number | null; result_code: string };
+};
+type ResultWindowDetail = {
+  window: ResultWindow;
+  results: ResultEntry[];
+  classRemarks: Array<{ class_id: string; remark: string }>;
+  subjectRemarks: Array<{ class_id: string; subject_id: string; remark: string }>;
 };
 type SchoolOverview = {
   school: { name: string; examination_code: string; location: string; email: string | null; po_box: string | null };
@@ -61,11 +67,12 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [administratorActivationCode, setAdministratorActivationCode] = useState("");
   const [schoolLogo, setSchoolLogo] = useState<File | null>(null);
   const [principalSignature, setPrincipalSignature] = useState<File | null>(null);
   const [form, setForm] = useState({
     name: "", examinationCode: "", location: "", email: "", poBox: "", principalName: "",
-    principalEmail: "", administratorName: "", administratorEmail: "",
+    principalEmail: "", administratorName: "", administratorPhone: "",
   });
   const refresh = useCallback(() => apiRequest<{ schools: SchoolRecord[] }>("/api/super-admin/schools")
     .then(({ schools: rows }) => { setSchools(rows); setError(""); })
@@ -78,10 +85,11 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
     setError("");
     setNotice("");
     try {
-      const created = await apiRequest<{ school: { id: string } }>("/api/super-admin/schools", {
+      const created = await apiRequest<{ school: { id: string }; administratorActivationCode: string }>("/api/super-admin/schools", {
         method: "POST", body: JSON.stringify(form),
       });
-      setForm({ name: "", examinationCode: "", location: "", email: "", poBox: "", principalName: "", principalEmail: "", administratorName: "", administratorEmail: "" });
+      setForm({ name: "", examinationCode: "", location: "", email: "", poBox: "", principalName: "", principalEmail: "", administratorName: "", administratorPhone: "" });
+      setAdministratorActivationCode(created.administratorActivationCode);
       const uploadIssues: string[] = [];
       for (const [asset, file] of [["logo", schoolLogo], ["principal-signature", principalSignature]] as const) {
         if (!file) continue;
@@ -96,8 +104,8 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
       setSchoolLogo(null);
       setPrincipalSignature(null);
       setNotice(uploadIssues.length
-        ? `School registered and invitation sent. Branding upload needs attention: ${uploadIssues.join(" ")}`
-        : "School registered, invitation sent, and selected branding images uploaded.");
+        ? `School registered. Give the administrator the activation code below. Branding upload needs attention: ${uploadIssues.join(" ")}`
+        : "School registered. Give the administrator the activation code below to activate their staff account.");
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The school could not be created.");
@@ -121,11 +129,12 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           <label>School logo (PNG or JPEG, up to 2 MB)<input type="file" accept="image/png,image/jpeg" onChange={(event) => setSchoolLogo(event.target.files?.[0] ?? null)} /></label>
           <label>Principal signature (PNG or JPEG, up to 2 MB)<input type="file" accept="image/png,image/jpeg" onChange={(event) => setPrincipalSignature(event.target.files?.[0] ?? null)} /></label>
           <label>School Administrator full name<input required value={form.administratorName} onChange={(event) => setForm({ ...form, administratorName: event.target.value })} /></label>
-          <label>School Administrator email<input type="email" required value={form.administratorEmail} onChange={(event) => setForm({ ...form, administratorEmail: event.target.value })} /></label>
+          <label>School Administrator phone number<input type="tel" required value={form.administratorPhone} onChange={(event) => setForm({ ...form, administratorPhone: event.target.value })} /></label>
           {error && <p className="auth-error" role="alert">{error}</p>}
           {notice && <p className="auth-notice" role="status">{notice}</p>}
           <button className="primary-button" type="submit" disabled={busy}>{busy ? "Registering…" : "Register school"} <ArrowRight size={15} /></button>
         </form>
+        {administratorActivationCode && <div className="teacher-activation-code"><ShieldCheck size={18} /><span><strong>School Administrator activation code</strong><code>{administratorActivationCode}</code><small>Shown once. Give it to the administrator in person. It expires in seven days. After activation, they sign in through Teacher / Staff using this school and registered phone.</small></span></div>}
       </article>
       <article className="school-portal-card">
         <div className="school-portal-card-heading"><Users size={20} /><div><h2>Schools</h2><p>School-level progress overview</p></div><button className="icon-button" onClick={() => void refresh()} aria-label="Refresh schools"><RefreshCw size={16} /></button></div>
@@ -163,7 +172,10 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [resultMarks, setResultMarks] = useState<Record<string, string>>({});
   const [deadline, setDeadline] = useState("");
   const [timetableFile, setTimetableFile] = useState<File | null>(null);
+  const [signatureFile, setSignatureFile] = useState<File | null>(null);
   const [timetables, setTimetables] = useState<TimetableRecord[]>([]);
+  const [classRemarks, setClassRemarks] = useState<Record<string, string>>({});
+  const [subjectRemarks, setSubjectRemarks] = useState<Record<string, string>>({});
   const [principalRemarks, setPrincipalRemarks] = useState("");
   const [classTeacherRemarks, setClassTeacherRemarks] = useState("");
   const [teacherForm, setTeacherForm] = useState({
@@ -224,9 +236,11 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   useEffect(() => {
     if (!selectedWindowId || !["teacher", "class_coordinator", "school_admin"].includes(user.role)) return;
-    apiRequest<{ results: ResultEntry[] }>(`/api/school/result-windows/${selectedWindowId}`)
-      .then(({ results: rows }) => {
+    apiRequest<ResultWindowDetail>(`/api/school/result-windows/${selectedWindowId}`)
+      .then(({ results: rows, classRemarks: classRemarkRows, subjectRemarks: subjectRemarkRows }) => {
         setResults(rows);
+        setClassRemarks(Object.fromEntries(classRemarkRows.map((row) => [row.class_id, row.remark])));
+        setSubjectRemarks(Object.fromEntries(subjectRemarkRows.map((row) => [`${row.class_id}:${row.subject_id}`, row.remark])));
         setResultMarks(Object.fromEntries(rows.map((row) => [`${row.rosterId}:${row.subjectId}`, row.result?.mark == null ? "" : String(row.result.mark)])));
       })
       .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : "Results could not be loaded."));
@@ -313,6 +327,51 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The timetable could not be shared.");
+    } finally { setBusy(false); }
+  }
+
+  async function saveClassRemark(classId: string) {
+    if (!selectedWindowId) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/api/school/result-windows/${selectedWindowId}/classes/${classId}/remarks`, {
+        method: "PUT", body: JSON.stringify({ remark: classRemarks[classId] ?? "" }),
+      });
+      setNotice("Class teacher remarks saved.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Class teacher remarks could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveSubjectRemark(classId: string, subjectId: string) {
+    if (!selectedWindowId) return;
+    const key = `${classId}:${subjectId}`;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/api/school/result-windows/${selectedWindowId}/classes/${classId}/subjects/${subjectId}/remarks`, {
+        method: "PUT", body: JSON.stringify({ remark: subjectRemarks[key] ?? "" }),
+      });
+      setNotice("Subject teacher remarks saved.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Subject teacher remarks could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadSignature() {
+    if (!signatureFile) return;
+    const form = new FormData();
+    form.set("file", signatureFile);
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest("/api/school/my-signature", { method: "PUT", body: form });
+      setSignatureFile(null);
+      setNotice("Your signature has been saved for reports in your assigned class.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Your signature could not be saved.");
     } finally { setBusy(false); }
   }
 
@@ -433,7 +492,8 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
     </section>
     <section className="school-portal-grid">
       {(isSchoolAdmin) && <article className="school-portal-card">
-        <h2>Create a class</h2><form className="school-portal-form compact" onSubmit={(event) => void createClass(event)}>
+        <h2>Create a class</h2>
+        <form className="school-portal-form compact" onSubmit={(event) => void createClass(event)}>
           <label>Grade<select value={grade} onChange={(event) => setGrade(event.target.value)}>{Array.from({ length: 12 }, (_, index) => <option key={index}>Grade {index + 1}</option>)}</select></label>
           <label>Stream<input required value={stream} onChange={(event) => setStream(event.target.value)} placeholder="A, B, East…" /></label>
           <label>Class Teacher<select name="classTeacherId"><option value="">Not assigned</option>{teachers.filter((teacher) => teacher.profile_id && teacher.account_role === "teacher").map((teacher) => <option key={teacher.id} value={teacher.profile_id!}>{teacher.full_name}</option>)}</select></label>
@@ -466,6 +526,11 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
       </article>}
       {(user.role === "teacher" || user.role === "class_coordinator") && <article className="school-portal-card">
         <h2>Class timetables</h2>{timetables.map((item) => <div className="school-list-row" key={item.id}><div><strong>{item.grade} · {item.filename}</strong><small>Available until {new Date(item.expiresAt).toLocaleDateString()}</small></div><a className="primary-button" href={item.downloadUrl} download><Download size={15} /> Download</a></div>)}{!timetables.length && <p className="school-empty">No current timetable has been shared.</p>}
+      </article>}
+      {user.role === "teacher" && <article className="school-portal-card">
+        <h2>Report signature</h2><p>Upload a PNG or JPEG signature image. It appears on reports for classes where you are assigned as Class Teacher.</p>
+        <label className="school-portal-form compact">Signature image<input type="file" accept="image/png,image/jpeg" onChange={(event) => setSignatureFile(event.target.files?.[0] ?? null)} /></label>
+        <button className="primary-button" disabled={busy || !signatureFile} onClick={() => void uploadSignature()}>Save signature</button>
       </article>}
       {canOnboardStudents && <article className="school-portal-card">
         <h2>Onboard a student</h2><form className="school-portal-form compact" onSubmit={(event) => void addStudent(event)}>
@@ -524,7 +589,21 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
         <h2>Assigned students</h2>{students.map((record) => <div className="school-list-row" key={record.id}><div><strong>{record.full_name}</strong><small>{record.school_classes.grade} {record.school_classes.stream}</small></div><span>{record.assessment_number}</span></div>)}
         {!students.length && <p className="school-empty">No students are assigned to your classes.</p>}
       </article>}
-      {user.role === "class_coordinator" && <article className="school-portal-card"><h2>Grade analysis</h2><p>Results analysis and printable grade reports will appear here after the school opens an exam results window.</p></article>}
+      {user.role === "class_coordinator" && windows.find(({ id }) => id === selectedWindowId) && <article className="school-portal-card">
+        <h2>Grade analysis · {windows.find(({ id }) => id === selectedWindowId)?.grade}</h2>
+        <p>{new Set(results.map((row) => row.rosterId)).size} students · {new Set(results.filter((row) => row.result?.result_code === "mark").map((row) => `${row.rosterId}:${row.subjectId}`)).size} marks entered</p>
+        {[...new Map(results.map((row) => [row.subjectId, row])).values()].map((subject) => {
+          const rows = results.filter((row) => row.subjectId === subject.subjectId);
+          const marked = rows.filter((row) => row.result?.result_code === "mark" && row.result.mark !== null);
+          const averagePercent = marked.length
+            ? marked.reduce((total, row) => total + ((row.result?.mark ?? 0) / row.maxMarks * 100), 0) / marked.length
+            : null;
+          return <div className="school-list-row" key={subject.subjectId}>
+            <div><strong>{subject.subjectName}</strong><small>{marked.length}/{rows.length} marks · {rows.filter((row) => row.result?.result_code === "X").length} X · {rows.filter((row) => row.result?.result_code === "Y").length} Y · {rows.filter((row) => !row.result).length} pending</small></div>
+            <span>Mean {averagePercent === null ? "N/A" : `${averagePercent.toFixed(1)}%`}</span>
+          </div>;
+        })}
+      </article>}
       {user.role === "teacher" && <article className="school-portal-card"><h2>Teaching workspace</h2><p>Choose one of your assigned classes above to work with its students. Results entry, assignments, and class announcements are school-scoped.</p></article>}
       {windows.length > 0 && (user.role === "school_admin" || user.role === "class_coordinator" || user.role === "teacher") && <article className="school-portal-card school-results-card">
         <div className="school-portal-card-heading"><div><h2>Examination results</h2><p>Entry deadlines and review progress</p></div>
@@ -536,6 +615,8 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button className="primary-button" disabled={busy} onClick={() => void releaseReports()}>Generate and send student reports</button>
         </>}
         {user.role === "class_coordinator" && windows.find(({ id }) => id === selectedWindowId)?.status === "coordinator_review" && <button className="primary-button" disabled={busy} onClick={() => void submitGrade()}>Submit grade analysis to school administrator</button>}
+        {user.role === "teacher" && ["open", "coordinator_review"].includes(windows.find(({ id }) => id === selectedWindowId)?.status ?? "") && classes.filter((classItem) => classItem.class_teacher_id === user.id).map((classItem) => <label className="school-remarks-field" key={classItem.id}>{classItem.grade} {classItem.stream} class teacher's remarks<textarea maxLength={1500} value={classRemarks[classItem.id] ?? ""} onChange={(event) => setClassRemarks({ ...classRemarks, [classItem.id]: event.target.value })} /><button type="button" className="quiet-button" disabled={busy} onClick={() => void saveClassRemark(classItem.id)}>Save class remarks</button></label>)}
+        {user.role === "teacher" && ["open", "coordinator_review"].includes(windows.find(({ id }) => id === selectedWindowId)?.status ?? "") && [...new Map(results.filter((row) => row.canEditSubjectRemark).map((row) => [`${row.classId}:${row.subjectId}`, row])).values()].map((row) => <label className="school-remarks-field" key={`${row.classId}:${row.subjectId}`}>{row.stream} · {row.subjectName} teacher's remarks<textarea maxLength={1500} value={subjectRemarks[`${row.classId}:${row.subjectId}`] ?? ""} onChange={(event) => setSubjectRemarks({ ...subjectRemarks, [`${row.classId}:${row.subjectId}`]: event.target.value })} /><button type="button" className="quiet-button" disabled={busy} onClick={() => void saveSubjectRemark(row.classId, row.subjectId)}>Save subject remarks</button></label>)}
         <div className="school-results-list">{results.map((row) => {
           const key = `${row.rosterId}:${row.subjectId}`;
           const editable = user.role === "teacher" && windows.find(({ id }) => id === selectedWindowId)?.status === "open" && !row.result;
