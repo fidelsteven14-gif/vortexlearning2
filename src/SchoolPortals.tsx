@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowRight, Check, Download, Image, LogOut, RefreshCw, School, ShieldCheck, Upload, Users, X } from "lucide-react";
+import { Archive, ArrowRight, Check, ChevronLeft, Database, Download, Image, LogOut, RefreshCw, School, ShieldCheck, Trash2, Upload, Users, X } from "lucide-react";
 import { apiRequest, supportEmail, type User } from "./api";
 import Brand from "./Brand";
 import { kenyaCounties } from "../supabase/functions/_shared/kenya-counties";
@@ -52,7 +52,21 @@ type RegistrationResult = {
 type ClassRecord = { id: string; grade: string; stream: string; class_teacher_id?: string | null; coordinator_id?: string | null; studentCount?: number };
 type SubjectRecord = { id: string; name: string; max_marks: number };
 type StudentRecord = { id: string; full_name: string; assessment_number: string; class_id: string; school_classes: { grade: string; stream: string } };
-type TeacherRecord = { id: string; profile_id: string | null; account_role: string; full_name: string; phone_number: string; department_head: string | null; subject_head: string | null };
+type TeacherRecord = { id: string; profile_id: string | null; account_role: string; full_name: string; teacher_email?: string | null; phone_number: string; department_head: string | null; subject_head: string | null; invitation_status?: string };
+type SuperAdminStudent = {
+  id: string; full_name: string; assessment_number: string; created_at: string;
+  school_classes: { grade: string; stream: string };
+  profiles: { active: boolean; email_verified: boolean } | null;
+};
+type SuperAdminTeacher = {
+  id: string; account_role: string; full_name: string; teacher_email: string | null; phone_number: string;
+  invitation_status: string; created_at: string;
+  profiles: { active: boolean; email_verified: boolean } | null;
+  teacher_class_subjects: Array<{
+    school_classes: { grade: string; stream: string } | null;
+    school_subjects: { name: string } | null;
+  }>;
+};
 type DepartmentTeacher = { id: string; full_name: string; department_head: string; assignments: Array<{ class_id: string; subject_id: string }> };
 type ManagedReport = {
   id: string; studentName: string; grade: string; stream: string; term: number | null; half: string;
@@ -125,6 +139,11 @@ function emptySchoolForm(): SchoolForm {
 
 function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [schools, setSchools] = useState<SchoolRecord[]>([]);
+  const [selectedSchoolId, setSelectedSchoolId] = useState("");
+  const [selectedDatabase, setSelectedDatabase] = useState<"students" | "teachers" | null>(null);
+  const [databaseStudents, setDatabaseStudents] = useState<SuperAdminStudent[]>([]);
+  const [databaseTeachers, setDatabaseTeachers] = useState<SuperAdminTeacher[]>([]);
+  const [databaseBusy, setDatabaseBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -136,11 +155,19 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   const [logoUploadError, setLogoUploadError] = useState("");
   const [updatingSchoolId, setUpdatingSchoolId] = useState("");
   const [updatingLogoSchoolId, setUpdatingLogoSchoolId] = useState("");
+  const [logoNotice, setLogoNotice] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<SchoolRecord | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState("");
+  const [deletingSchool, setDeletingSchool] = useState(false);
   const logoPreviewUrl = useMemo(() => schoolLogo ? URL.createObjectURL(schoolLogo) : "", [schoolLogo]);
   const refresh = useCallback(() => apiRequest<{ schools: SchoolRecord[] }>("/api/super-admin/schools")
     .then(({ schools: rows }) => { setSchools(rows); setError(""); })
     .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : "Schools could not be loaded.")), []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [refresh]);
   useEffect(() => () => { if (logoPreviewUrl) URL.revokeObjectURL(logoPreviewUrl); }, [logoPreviewUrl]);
 
   function updateForm<Key extends keyof SchoolForm>(key: Key, value: SchoolForm[Key]) {
@@ -210,8 +237,10 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   async function replaceDirectoryLogo(schoolId: string, file: File) {
     setUpdatingLogoSchoolId(schoolId);
     setError("");
+    setLogoNotice("");
     try {
       await uploadSchoolLogo(schoolId, file);
+      setLogoNotice("The school logo is saved and displayed in the school directory.");
       await refresh();
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "The school logo could not be updated.");
@@ -256,8 +285,156 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
     }
   }
 
+  async function openSchoolDatabase(schoolId: string, database: "students" | "teachers") {
+    setSelectedSchoolId(schoolId);
+    setSelectedDatabase(database);
+    setDatabaseBusy(true);
+    setError("");
+    try {
+      if (database === "students") {
+        const result = await apiRequest<{ students: SuperAdminStudent[] }>(`/api/super-admin/schools/${schoolId}/database/students`);
+        setDatabaseStudents(result.students);
+      } else {
+        const result = await apiRequest<{ teachers: SuperAdminTeacher[] }>(`/api/super-admin/schools/${schoolId}/database/teachers`);
+        setDatabaseTeachers(result.teachers);
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The school database could not be loaded.");
+    } finally {
+      setDatabaseBusy(false);
+    }
+  }
+
+  async function permanentlyDeleteSchool() {
+    if (!pendingDelete || deleteConfirmationName !== pendingDelete.name) return;
+    setDeletingSchool(true);
+    setError("");
+    try {
+      const result = await apiRequest<{ deleted: boolean; message: string }>(`/api/super-admin/schools/${pendingDelete.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirmationName: deleteConfirmationName }),
+      });
+      setNotice(result.message);
+      setPendingDelete(null);
+      setDeleteConfirmationName("");
+      setSelectedSchoolId("");
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The school could not be deleted.");
+    } finally {
+      setDeletingSchool(false);
+    }
+  }
+
   const grades = Array.from({ length: 12 }, (_, index) => `Grade ${index + 1}`);
   const phonePattern = "(?:\\+?254|0)(?:[17]\\d{8}|[2-5]\\d{7,8})";
+  const selectedSchool = schools.find((school) => school.id === selectedSchoolId);
+
+  if (selectedSchool) {
+    return <PortalShell title={selectedSchool.name} subtitle="School profile and databases" onLogout={onLogout}>
+      <section className="school-profile-page">
+        <button className="quiet-button school-back-button" type="button" onClick={() => { setSelectedSchoolId(""); setSelectedDatabase(null); setError(""); }}>
+          <ChevronLeft size={16} /> Back to schools
+        </button>
+        {error && <p className="auth-error" role="alert">{error}</p>}
+        {logoNotice && <p className="auth-notice" role="status">{logoNotice}</p>}
+        <header className="school-profile-hero">
+          {selectedSchool.logoUrl ? <img src={selectedSchool.logoUrl} alt={`${selectedSchool.name} logo`} /> : <div><School size={30} aria-hidden="true" /></div>}
+          <span><h2>{selectedSchool.name}</h2><p>{selectedSchool.examination_code} · {selectedSchool.category ?? "Category not recorded"} · {selectedSchool.county}{selectedSchool.sub_county ? `, ${selectedSchool.sub_county}` : ""}</p></span>
+          <div className="school-profile-live-status">
+            <span>Verification: <strong>{selectedSchool.verification_status}</strong></span>
+            <span>Operations: <strong>{selectedSchool.operational_status}</strong></span>
+          </div>
+        </header>
+        <nav className="school-database-nav" aria-label="School information and databases">
+          <button type="button" className={!selectedDatabase ? "school-database-card school-database-active" : "school-database-card"} onClick={() => setSelectedDatabase(null)}>
+            <School size={20} /><strong>School bio</strong><span>Official school information and management</span>
+          </button>
+          <button type="button" className={selectedDatabase === "students" ? "school-database-card school-database-active" : "school-database-card"} onClick={() => void openSchoolDatabase(selectedSchool.id, "students")}>
+            <Database size={20} /><strong>Students database</strong><span>{selectedSchool.studentCount} student records</span>
+          </button>
+          <button type="button" className={selectedDatabase === "teachers" ? "school-database-card school-database-active" : "school-database-card"} onClick={() => void openSchoolDatabase(selectedSchool.id, "teachers")}>
+            <Users size={20} /><strong>Teachers database</strong><span>{selectedSchool.teacherCount} staff records</span>
+          </button>
+        </nav>
+        {!selectedDatabase && <section className="school-profile-content">
+          <article className="school-portal-card">
+            <h3>School bio</h3>
+            <dl className="school-review-grid">
+              <div><dt>Registration number</dt><dd>{selectedSchool.examination_code}</dd></div><div><dt>Category and ownership</dt><dd>{selectedSchool.category ?? "Not recorded"} · {selectedSchool.ownership ?? "Not recorded"}</dd></div>
+              <div><dt>County / Sub-County</dt><dd>{selectedSchool.county}, {selectedSchool.sub_county}</dd></div><div><dt>Physical location</dt><dd>{selectedSchool.location}</dd></div>
+              <div><dt>Official telephone</dt><dd>{selectedSchool.telephone || "Not recorded"}</dd></div><div><dt>Official email</dt><dd>{selectedSchool.email || "Not provided"}</dd></div>
+              <div><dt>Postal address</dt><dd>{selectedSchool.po_box || "Not provided"}</dd></div><div><dt>Website</dt><dd>{selectedSchool.website || "Not provided"}</dd></div>
+              <div><dt>Grades offered</dt><dd>{selectedSchool.grades?.join(", ") || "Not configured"}</dd></div>
+              <div><dt>School Administrator</dt><dd>{selectedSchool.administrator?.name ?? "Not assigned"} · {selectedSchool.administrator?.invitationStatus ?? "not invited"}</dd></div>
+              {selectedSchool.administrator?.email && <div><dt>Administrator email</dt><dd>{selectedSchool.administrator.email}</dd></div>}
+            </dl>
+            <label className="school-profile-logo-upload"><Upload size={15} /> {updatingLogoSchoolId === selectedSchool.id ? "Saving logo…" : selectedSchool.logoUrl ? "Replace school logo" : "Upload school logo"}
+              <input type="file" accept="image/jpeg,image/png,image/webp" disabled={updatingLogoSchoolId === selectedSchool.id} onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 2 * 1024 * 1024) {
+                  setError("Choose a valid JPEG, PNG, or WebP school logo no larger than 2 MB.");
+                  return;
+                }
+                void replaceDirectoryLogo(selectedSchool.id, file);
+              }} />
+            </label>
+          </article>
+          <article className="school-portal-card school-management-actions">
+            <h3>School management</h3>
+            {selectedSchool.verification_status !== "verified" && <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "verificationStatus", "verified")}><ShieldCheck size={15} /> Verify school</button>}
+            {selectedSchool.verification_status === "verified" && <p className="auth-notice">This school is verified.</p>}
+            {selectedSchool.operational_status === "active"
+              ? <button type="button" className="quiet-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "operationalStatus", "suspended")}>Suspend school</button>
+              : <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "operationalStatus", "active")}>Reactivate school</button>}
+            {selectedSchool.operational_status !== "archived" && <button type="button" className="quiet-button school-archive-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => {
+              if (window.confirm(`Archive ${selectedSchool.name}? Its records will be retained, and school users will lose access until it is reactivated.`)) {
+                void updateSchoolStatus(selectedSchool, "operationalStatus", "archived");
+              }
+            }}><Archive size={15} /> Archive school and retain records</button>}
+            <button type="button" className="school-permanent-delete-button" disabled={selectedSchool.operational_status !== "archived"} onClick={() => { setPendingDelete(selectedSchool); setDeleteConfirmationName(""); }}><Trash2 size={15} /> {selectedSchool.operational_status === "archived" ? "Permanently delete school" : "Archive before permanent deletion"}</button>
+            {selectedSchool.administrator?.invitationStatus === "failed" && <button type="button" className="quiet-button" disabled={busy} onClick={() => void retryAdministratorInvitation(selectedSchool.id)}>Resend administrator invitation</button>}
+          </article>
+        </section>}
+        {selectedDatabase === "students" && <article className="school-portal-card school-database-table">
+          <h3>Students database · {selectedSchool.name}</h3>
+          {databaseBusy ? <p className="school-empty">Loading student records…</p> : databaseStudents.length ? <div className="school-data-table-wrap"><table>
+            <thead><tr><th>Student</th><th>Assessment number</th><th>Grade / stream</th><th>Account</th></tr></thead>
+            <tbody>{databaseStudents.map((student) => <tr key={student.id}>
+              <td>{student.full_name}</td><td>{student.assessment_number}</td><td>{student.school_classes.grade} {student.school_classes.stream}</td>
+              <td>{student.profiles?.active && student.profiles.email_verified ? "Active" : "Not activated"}</td>
+            </tr>)}</tbody>
+          </table></div> : <p className="school-empty">No student records have been added to this school.</p>}
+        </article>}
+        {selectedDatabase === "teachers" && <article className="school-portal-card school-database-table">
+          <h3>Teachers database · {selectedSchool.name}</h3>
+          {databaseBusy ? <p className="school-empty">Loading teacher records…</p> : databaseTeachers.length ? <div className="school-data-table-wrap"><table>
+            <thead><tr><th>Staff member</th><th>Role</th><th>Email</th><th>Phone</th><th>Assignments</th><th>Account</th></tr></thead>
+            <tbody>{databaseTeachers.map((teacher) => <tr key={teacher.id}>
+              <td>{teacher.full_name}</td><td>{teacher.account_role.replaceAll("_", " ")}</td><td>{teacher.teacher_email || "Not recorded"}</td><td>{teacher.phone_number}</td>
+              <td>{teacher.teacher_class_subjects.map(({ school_classes, school_subjects }) => `${school_classes?.grade ?? ""} ${school_classes?.stream ?? ""} · ${school_subjects?.name ?? ""}`).join(", ") || "—"}</td>
+              <td>{teacher.profiles?.active && teacher.profiles.email_verified ? "Active" : teacher.invitation_status === "sent" ? "Invitation sent" : teacher.invitation_status}</td>
+            </tr>)}</tbody>
+          </table></div> : <p className="school-empty">No teacher records have been added to this school.</p>}
+        </article>}
+      </section>
+      {pendingDelete && <div className="school-delete-modal-backdrop" role="presentation">
+        <section className="school-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="school-delete-title">
+          <button type="button" className="school-delete-close" aria-label="Cancel deletion" onClick={() => setPendingDelete(null)}><X size={18} /></button>
+          <Trash2 size={24} />
+          <h2 id="school-delete-title">Permanently delete {pendingDelete.name}?</h2>
+          <p>This cannot be undone. Student, teacher, class, and academic records for this school will be permanently removed. School accounts will be disabled. To keep records, cancel and use Archive instead.</p>
+          <label>Type <strong>{pendingDelete.name}</strong> to confirm<input autoFocus value={deleteConfirmationName} onChange={(event) => setDeleteConfirmationName(event.target.value)} /></label>
+          <div><button className="quiet-button" type="button" onClick={() => setPendingDelete(null)} disabled={deletingSchool}>Cancel</button>
+            <button className="school-permanent-delete-button" type="button" onClick={() => void permanentlyDeleteSchool()} disabled={deletingSchool || deleteConfirmationName !== pendingDelete.name}>
+              {deletingSchool ? "Deleting…" : "Permanently delete school"}
+            </button></div>
+        </section>
+      </div>}
+    </PortalShell>;
+  }
 
   return <PortalShell title="Platform administration" subtitle={`Super Admin · ${user.name}`} onLogout={onLogout}>
     <section className="school-portal-grid school-admin-grid">
@@ -360,43 +537,11 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
       </article>
       <article className="school-portal-card school-directory-card">
         <div className="school-portal-card-heading"><Users size={20} /><div><h2>School directory</h2><p>School identity, verification, and account status</p></div><button className="icon-button" onClick={() => void refresh()} aria-label="Refresh schools"><RefreshCw size={16} /></button></div>
-        {schools.map((school) => <div className="school-directory-row" key={school.id}>
-          <div className="school-directory-heading">
-            {school.logoUrl ? <img className="school-directory-logo" src={school.logoUrl} alt={`${school.name} logo`} /> : <div className="school-directory-logo school-directory-placeholder"><School size={20} aria-hidden="true" /></div>}
-            <div><strong>{school.name}</strong><small>{school.examination_code} · {school.category ?? "Category not recorded"} · {school.ownership ?? "Ownership not recorded"}</small><small>{school.county}{school.sub_county ? `, ${school.sub_county}` : ""} · {school.location}</small></div>
-          </div>
-          <div className="school-directory-details">
-            <span>Grades: {school.grades?.length ? school.grades.join(", ") : "Not configured"}</span>
-            <span>Administrator: {school.administrator?.name ?? "Not assigned"} · {school.administrator?.invitationStatus === "sent" ? "Invitation sent · awaiting activation" : school.administrator?.invitationStatus ?? "not invited"}</span>
-            <details className="school-directory-profile"><summary>View school profile</summary>
-              <span>Official telephone: {school.telephone || "Not recorded"}</span>
-              <span>Official email: {school.email || "Not provided"}</span>
-              <span>Postal address: {school.po_box || "Not provided"}</span>
-              <span>Website: {school.website || "Not provided"}</span>
-              {school.administrator?.email && <span>Administrator email: {school.administrator.email}</span>}
-            </details>
-            <div className="school-directory-selects">
-              <label>Verification<select disabled={updatingSchoolId === school.id} value={school.verification_status} onChange={(event) => void updateSchoolStatus(school, "verificationStatus", event.target.value)}>
-                <option value="pending">Pending verification</option><option value="verified">Verified</option><option value="rejected">Rejected</option>
-              </select></label>
-              <label>Operations<select disabled={updatingSchoolId === school.id} value={school.operational_status} onChange={(event) => void updateSchoolStatus(school, "operationalStatus", event.target.value)}>
-                <option value="active">Active</option><option value="suspended">Suspended</option><option value="archived">Archived</option>
-              </select></label>
-            </div>
-            <label className="school-logo-update"><Upload size={14} /> {updatingLogoSchoolId === school.id ? "Updating logo…" : "Update school logo"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={updatingLogoSchoolId === school.id} onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = "";
-              if (!file) return;
-              if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 2 * 1024 * 1024) {
-                setError("Choose a valid JPEG, PNG, or WebP school logo no larger than 2 MB.");
-                return;
-              }
-              void replaceDirectoryLogo(school.id, file);
-            }} /></label>
-            {(school.administrator?.invitationStatus === "failed" || school.administrator?.invitationStatus === "sent") && <button className="quiet-button" type="button" disabled={busy} onClick={() => void retryAdministratorInvitation(school.id)}><RefreshCw size={14} /> Resend invitation</button>}
-            <div className="school-counts"><span>{school.studentCount} students</span><span>{school.teacherCount} staff</span><span>{school.classCount} classes</span></div>
-          </div>
-        </div>)}
+        {logoNotice && <p className="auth-notice" role="status">{logoNotice}</p>}
+        {schools.map((school) => <button className="school-directory-compact-row" key={school.id} type="button" onClick={() => { setSelectedSchoolId(school.id); setSelectedDatabase(null); }}>
+          {school.logoUrl ? <img className="school-directory-logo" src={school.logoUrl} alt="" /> : <span className="school-directory-logo school-directory-placeholder"><School size={20} aria-hidden="true" /></span>}
+          <strong>{school.name}</strong><ArrowRight size={16} aria-hidden="true" />
+        </button>)}
         {!schools.length && !error && <p className="school-empty">No schools registered yet.</p>}
       </article>
     </section>
@@ -413,8 +558,8 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [managedReports, setManagedReports] = useState<ManagedReport[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [activationCode, setActivationCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resendingTeacherId, setResendingTeacherId] = useState("");
   const [stream, setStream] = useState("");
   const [grade, setGrade] = useState("Grade 1");
   const [subjectName, setSubjectName] = useState("");
@@ -434,7 +579,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [principalRemarks, setPrincipalRemarks] = useState("");
   const [classTeacherRemarks, setClassTeacherRemarks] = useState("");
   const [teacherForm, setTeacherForm] = useState({
-    fullName: "", phoneNumber: "", departmentHead: "", subjectHead: "", accountRole: "teacher",
+    fullName: "", email: "", phoneNumber: "", departmentHead: "", subjectHead: "", accountRole: "teacher",
     assignments: [{ classId: "", subjectId: "" }],
   });
 
@@ -713,12 +858,13 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function addTeacher(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy(true); setError(""); setNotice(""); setActivationCode("");
+    setBusy(true); setError(""); setNotice("");
     try {
-      const result = await apiRequest<{ activationCode: string }>("/api/school/teachers", {
+      const result = await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>("/api/school/teachers", {
         method: "POST",
         body: JSON.stringify({
           fullName: teacherForm.fullName,
+          email: teacherForm.email,
           phoneNumber: teacherForm.phoneNumber,
           accountRole: teacherForm.accountRole,
           departmentHead: teacherForm.departmentHead,
@@ -726,13 +872,29 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
           assignments: teacherForm.assignments,
         }),
       });
-      setActivationCode(result.activationCode);
-      setTeacherForm((current) => ({ ...current, fullName: "", phoneNumber: "", departmentHead: "", subjectHead: "" }));
-      setNotice("Teacher record created. Share this single-use activation code with the teacher in person.");
+      setTeacherForm((current) => ({ ...current, fullName: "", email: "", phoneNumber: "", departmentHead: "", subjectHead: "" }));
+      setNotice(result.message);
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Teacher could not be onboarded.");
     } finally { setBusy(false); }
+  }
+
+  async function resendTeacherInvitation(teacher: TeacherRecord) {
+    setResendingTeacherId(teacher.id);
+    setError(""); setNotice("");
+    try {
+      const result = await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>(
+        `/api/school/teachers/${teacher.id}/invitation`,
+        { method: "POST" },
+      );
+      setNotice(result.message);
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Teacher verification email could not be sent.");
+    } finally {
+      setResendingTeacherId("");
+    }
   }
 
   const isSchoolAdmin = user.role === "school_admin";
@@ -744,7 +906,6 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
       {overview.school.logoUrl ? <img src={overview.school.logoUrl} alt={`${overview.school.name} logo`} /> : <div><School size={23} aria-hidden="true" /></div>}
       <span><strong>{overview.school.name}</strong><small>{overview.school.category || "Category not recorded"} · {overview.school.county}, {overview.school.sub_county} · Grades offered: {overview.school.grades.join(", ") || "Not configured"}</small></span>
     </div>}
-    {activationCode && <div className="teacher-activation-code"><ShieldCheck size={18} /><span><strong>Teacher activation code</strong><code>{activationCode}</code><small>Shown once. Give it to the teacher in person. It expires in seven days.</small></span></div>}
     <section className="school-stat-grid">
       <div><strong>{overview?.counts.students ?? "—"}</strong><span>Students in your access</span></div>
       <div><strong>{overview?.counts.classes ?? "—"}</strong><span>Classes in your access</span></div>
@@ -805,6 +966,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
       {isSchoolAdmin && <article className="school-portal-card">
         <h2>Onboard a teacher</h2><form className="school-portal-form compact" onSubmit={(event) => void addTeacher(event)}>
           <label>Teacher full name<input required value={teacherForm.fullName} onChange={(event) => setTeacherForm({ ...teacherForm, fullName: event.target.value })} /></label>
+          <label>Teacher email<input required type="email" maxLength={254} value={teacherForm.email} onChange={(event) => setTeacherForm({ ...teacherForm, email: event.target.value })} /></label>
           <label>Phone number<input required type="tel" value={teacherForm.phoneNumber} onChange={(event) => setTeacherForm({ ...teacherForm, phoneNumber: event.target.value })} /></label>
           <label>Portal role<select value={teacherForm.accountRole} onChange={(event) => setTeacherForm({ ...teacherForm, accountRole: event.target.value })}><option value="teacher">Teacher</option><option value="class_coordinator">Class Coordinator</option></select></label>
           {teacherForm.assignments.map((assignment, index) => <div className="school-assignment-row" key={index}>
@@ -815,7 +977,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button type="button" className="quiet-button" onClick={() => setTeacherForm((current) => ({ ...current, assignments: [...current.assignments, { classId: classes[0]?.id ?? "", subjectId: subjects[0]?.id ?? "" }] }))} disabled={!classes.length || !subjects.length}>Add class and subject</button>
           <label>Department led (optional)<input value={teacherForm.departmentHead} onChange={(event) => setTeacherForm({ ...teacherForm, departmentHead: event.target.value })} /></label>
           <label>Subject led (optional)<input value={teacherForm.subjectHead} onChange={(event) => setTeacherForm({ ...teacherForm, subjectHead: event.target.value })} /></label>
-          <button className="primary-button" disabled={busy || !teacherForm.assignments.every((assignment) => assignment.classId && assignment.subjectId)}>Create teacher and activation code</button>
+          <button className="primary-button" disabled={busy || !teacherForm.assignments.every((assignment) => assignment.classId && assignment.subjectId)}>Create teacher and send verification email</button>
         </form>
       </article>}
       <article className="school-portal-card">
@@ -831,7 +993,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>)}
       </article>}
       {user.role === "school_admin" && <article className="school-portal-card">
-        <h2>Teachers</h2>{teachers.map((teacher) => <div className="school-list-row" key={teacher.id}><div><strong>{teacher.full_name}</strong><small>{teacher.department_head ? `Head of ${teacher.department_head}` : teacher.subject_head ? `Head of ${teacher.subject_head}` : "Teacher"}</small></div><span>{teacher.phone_number}</span></div>)}
+        <h2>Teachers</h2>{teachers.map((teacher) => <div className="school-list-row" key={teacher.id}><div><strong>{teacher.full_name}</strong><small>{teacher.department_head ? `Head of ${teacher.department_head}` : teacher.subject_head ? `Head of ${teacher.subject_head}` : "Teacher"} · {teacher.teacher_email ?? "No email recorded"} · {teacher.invitation_status ?? "not invited"}</small></div><span>{teacher.phone_number}</span>{teacher.teacher_email && teacher.invitation_status !== "accepted" && <button className="quiet-button" type="button" disabled={resendingTeacherId === teacher.id} onClick={() => void resendTeacherInvitation(teacher)}>{resendingTeacherId === teacher.id ? "Sending…" : "Resend email code"}</button>}</div>)}
       </article>}
       {user.role === "teacher" && departmentTeachers.length > 0 && <article className="school-portal-card">
         <h2>{departmentTeachers[0].department_head} department</h2>

@@ -7,7 +7,7 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
 1. In the GitHub repository settings, add the Actions secrets `SUPABASE_ACCESS_TOKEN` (create a personal access token in Supabase account settings) and `SUPABASE_DB_PASSWORD` (the database password set when creating the project). Never put either value in source control or chat.
 2. Run the **Deploy Supabase backend** workflow. It applies the SQL migrations before deploying the API function.
 3. In Supabase Authentication → URL Configuration, set the **Site URL** to `https://fidelsteven14-gif.github.io/vortexlearning2/` and add `https://fidelsteven14-gif.github.io/vortexlearning2/**` to the **Redirect URLs** allow list. Also allow `http://localhost:5173/**` and `http://localhost:4173/**` for local development. Remove any stale `http://localhost:3000` Site URL or redirect entry; otherwise recovery links may send production users to localhost.
-4. In Authentication → Email Templates, paste `templates/confirm-sign-up.html` into the **Confirm sign up** body and `templates/reset-password.html` into the **Reset password** body. Set the subjects to `VERIFY YOUR EMAIL — Vortex Learning` and `RESET YOUR PASSWORD — Vortex Learning`. These are live Supabase dashboard settings and are not changed by deploying migrations or the Edge Function. The confirmation email displays the code in large type and its button opens the app with the code prefilled. Email clients do not allow scripts to copy text to the clipboard, so the working **Copy code** button is in the verification form. Configure custom SMTP for authentication emails; Supabase's default sender is restricted and not suitable for public sign-ups.
+4. In Authentication → Email Templates, paste `templates/confirm-sign-up.html` into the **Confirm sign up** body and `templates/reset-password.html` into the **Reset password** body. Set the subjects to `VERIFY YOUR EMAIL — Vortex Learning` and `RESET YOUR PASSWORD — Vortex Learning`. These are live Supabase dashboard settings and are not changed by deploying migrations or the Edge Function. The confirmation email displays the six-digit code; users enter it in the app's verification form. Configure custom SMTP for authentication emails; Supabase's default sender is restricted and not suitable for public sign-ups.
 5. The Pages workflow defaults `VITE_API_BASE_URL` to `https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1`. If you later move the API, set the GitHub repository variable `VITE_API_BASE_URL` to override it, then run the **Deploy frontend to GitHub Pages** workflow.
 6. Local SQLite accounts and passwords are not migrated to Supabase. To bootstrap the first Super Admin, first create and confirm the administrator's email account in Supabase Authentication → Users, then run this in the SQL editor, replacing the email and phone placeholders with the account details:
 
@@ -60,6 +60,22 @@ does not contain an authoritative Sub-County mapping, Sub-County is entered as
 text after selecting a county rather than populated from invented mappings.
 Existing schools retain blank/unknown category, ownership, location, and grade
 metadata rather than being assigned fabricated values.
+
+Super Admin school profiles show live verification and operational status from
+the database. Verify, suspend/reactivate, and archive actions are available
+there; archiving retains school data and disables access. Permanent deletion is
+separate, requires an archived school and exact-name confirmation, and removes
+school records. The Super Admin can open each school's student and teacher
+databases from its profile. Logo uploads can be retried from the profile if the
+initial upload fails.
+
+School Administrators enter each teacher's email during onboarding. Supabase
+sends the six-digit signup verification code to that address; the teacher must
+enter the same school, email, and code before the app presents password setup.
+The account is enabled only after the password is saved, and the teacher then
+signs in normally. A pending teacher's code can be resent from the Teachers
+list. This flow uses the **Confirm sign up** email template, which should
+describe the code as verification for a school account.
 
 The school-based target onboarding flow is documented in `CBC-PLATFORM-PLAN.md`. The `20261014050000_school_platform.sql` migration adds school, class, roster, teacher-assignment, results, report-copy, timetable, and notice tables. It is a data-model foundation; do not treat it as a completed rollout until the API and frontend workflows are also deployed and verified.
 

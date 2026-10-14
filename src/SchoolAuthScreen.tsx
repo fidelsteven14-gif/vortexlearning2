@@ -3,11 +3,12 @@ import { ArrowLeft, ArrowRight, BookOpen, Eye, EyeOff, GraduationCap, LockKeyhol
 import { apiRequest, setToken, supportEmail, type User } from "./api";
 import Brand from "./Brand";
 
-type Mode = "login" | "student-lookup" | "student-confirm" | "student-register" | "teacher-register" | "verify" | "forgot" | "reset" | "invite" | "invite-verify";
+type Mode = "login" | "student-lookup" | "student-confirm" | "student-register" | "teacher-register" | "teacher-password" | "verify" | "forgot" | "reset" | "invite" | "invite-verify";
 type LoginRole = "student" | "teacher";
 type StudentDetails = { name: string; assessmentNumber: string; grade: string; stream: string; subjects: Array<{ id: string; name: string }> };
 type AuthResponse = { token: string; refreshToken?: string; user: User };
 type ActivationIdentity = { schoolName: string; assessmentNumber: string; guardianPhone: string };
+type TeacherActivation = { accessToken: string; refreshToken: string; phoneNumber: string };
 
 function PasswordInput({
   value,
@@ -63,6 +64,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
   const [student, setStudent] = useState<StudentDetails | null>(null);
   const [studentConfirmed, setStudentConfirmed] = useState(false);
   const [activation, setActivation] = useState<ActivationIdentity | null>(null);
+  const [teacherActivation, setTeacherActivation] = useState<TeacherActivation | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(recovery.error);
   const [busy, setBusy] = useState(false);
@@ -121,18 +123,44 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
         return;
       }
       if (mode === "teacher-register") {
-        if (password !== confirmation) {
-          setError("The passwords do not match. Check both fields and try again.");
-          return;
-        }
-        const response = await apiRequest<{ message: string; email: string }>("/api/onboarding/register-teacher", {
+        const response = await apiRequest<{
+          message: string; email: string; accessToken: string; refreshToken: string; phoneNumber: string;
+        }>("/api/onboarding/verify-teacher-invitation", {
           method: "POST",
-          body: JSON.stringify({ schoolName, activationCode, email, password, passwordConfirmation: confirmation }),
+          body: JSON.stringify({ schoolName, code: activationCode, email }),
         });
         setEmail(response.email);
+        setTeacherActivation({
+          accessToken: response.accessToken,
+          refreshToken: response.refreshToken,
+          phoneNumber: response.phoneNumber,
+        });
+        setActivationCode("");
+        changeMode("teacher-password");
+        setNotice(response.message);
+        return;
+      }
+      if (mode === "teacher-password") {
+        if (!teacherActivation || password !== confirmation) {
+          setError(!teacherActivation ? "Verify the email invitation before setting your password." : "The passwords do not match. Check both fields and try again.");
+          return;
+        }
+        const response = await apiRequest<{ message: string }>("/api/onboarding/activate-teacher-account", {
+          method: "POST",
+          body: JSON.stringify({
+            accessToken: teacherActivation.accessToken,
+            refreshToken: teacherActivation.refreshToken,
+            password,
+            passwordConfirmation: confirmation,
+          }),
+        });
+        setTeacherActivation(null);
         setPassword("");
         setConfirmation("");
-        changeMode("verify");
+        setSchoolName(schoolName.trim());
+        setIdentifier(teacherActivation.phoneNumber);
+        setLoginRole("teacher");
+        changeMode("login");
         setNotice(response.message);
         return;
       }
@@ -225,12 +253,14 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
           mode === "teacher-register" ? "Activate your school staff account" :
             mode === "verify" ? "Verify your email" :
               mode === "forgot" ? "Reset your password" :
+              mode === "teacher-password" ? "Create your password" :
                 mode === "invite" || mode === "invite-verify" ? "Activate School Administrator account" : "Choose a new password";
   const intro = mode === "login" ? "Use the school and official details already recorded for your account." :
     mode === "student-lookup" ? "Enter your school, assessment number, and the guardian phone recorded by your class teacher." :
       mode === "student-confirm" ? "Check that the school roster has found the right learner before creating an account." :
         mode === "verify" ? `Enter the six-digit code sent to ${email}.` :
-          mode === "teacher-register" ? "Enter the single-use activation code given to you by your School Administrator." :
+          mode === "teacher-register" ? "Enter the six-digit code sent to the email address your School Administrator recorded for you." :
+            mode === "teacher-password" ? "Your email is verified. Create a password, then sign in to open your school dashboard." :
             mode === "forgot" ? "Enter the email address on your account. If it is registered, a recovery link will be sent." :
               mode === "invite" ? "Confirm your email and choose a password to activate your School Administrator account." :
                 mode === "invite-verify" ? "Enter the six-digit code from your latest School Administrator invitation email, then choose a password." :
@@ -280,10 +310,8 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
               <label className="form-label">Guardian phone number<input type="tel" value={guardianPhone} onChange={(event) => setGuardianPhone(event.target.value)} autoComplete="tel" maxLength={24} required /></label>
             </>}
             {mode === "teacher-register" && <>
-              <label className="form-label">Single-use activation code<input value={activationCode} onChange={(event) => setActivationCode(event.target.value)} autoComplete="one-time-code" maxLength={16} pattern="[0-9a-fA-F]{16}" required /></label>
+              <label className="form-label">Single-use activation code<input value={activationCode} onChange={(event) => setActivationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} pattern="[0-9]{6}" required /></label>
               <label className="form-label">Email address<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} required /></div></label>
-              <label className="form-label">Create password<PasswordInput value={password} onChange={setPassword} autoComplete="new-password" minLength={6} maxLength={72} required /></label>
-              <label className="form-label">Confirm password<PasswordInput value={confirmation} onChange={setConfirmation} autoComplete="new-password" minLength={6} maxLength={72} required /></label>
             </>}
             {mode === "student-register" && <>
               <label className="form-label">Email address<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} required /></div></label>
@@ -296,7 +324,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
               <label className="form-label">School Administrator email<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} required /></div></label>
               <label className="form-label">6-digit invitation code<input value={invitationCode} onChange={(event) => setInvitationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} pattern="[0-9]{6}" required /></label>
             </>}
-            {(mode === "reset" || mode === "invite" || mode === "invite-verify") && <>
+            {(mode === "reset" || mode === "invite" || mode === "invite-verify" || mode === "teacher-password") && <>
               <label className="form-label">New password<PasswordInput value={password} onChange={setPassword} autoComplete="new-password" minLength={6} maxLength={72} required /></label>
               <label className="form-label">Confirm password<PasswordInput value={confirmation} onChange={setConfirmation} autoComplete="new-password" minLength={6} maxLength={72} required /></label>
             </>}
@@ -304,7 +332,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
             {error && <div className="auth-error" role="alert">{error}</div>}
             {notice && <div className="auth-notice" role="status">{notice}</div>}
             <button className="auth-submit" type="submit" disabled={busy}>
-              {busy ? "Please wait…" : mode === "login" ? "Sign in" : mode === "student-lookup" ? "Find my school record" : mode === "student-register" || mode === "teacher-register" ? "Create account" : mode === "verify" ? "Verify email" : mode === "forgot" ? "Send recovery link" : mode === "invite" || mode === "invite-verify" ? "Activate School Administrator account" : "Save new password"}
+              {busy ? "Please wait…" : mode === "login" ? "Sign in" : mode === "student-lookup" ? "Find my school record" : mode === "student-register" ? "Create account" : mode === "teacher-register" ? "Verify email code" : mode === "verify" ? "Verify email" : mode === "forgot" ? "Send recovery link" : mode === "invite" || mode === "invite-verify" ? "Activate School Administrator account" : mode === "teacher-password" ? "Save password and continue to sign in" : "Save new password"}
               <ArrowRight size={16} />
             </button>
           </form>}
