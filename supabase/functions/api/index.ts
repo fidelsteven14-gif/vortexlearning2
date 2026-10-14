@@ -1,18 +1,24 @@
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { PDFDocument } from "npm:pdf-lib@1.17.1";
+import bcrypt from "npm:bcryptjs@2.4.3";
+import { PDFDocument, rgb } from "npm:pdf-lib@1.17.1";
 import { z } from "npm:zod@3.24.1";
 import { gradeNumber, seniorCompulsorySubjects, seniorPathways } from "../_shared/curriculum.ts";
 
-type Role = "student" | "admin";
+type Role = "student" | "teacher" | "class_coordinator" | "school_admin" | "super_admin" | "admin";
 type Profile = {
   id: string;
   name: string;
-  username: string;
+  username: string | null;
   email: string;
   email_verified: boolean;
   user_code: string | null;
   role: Role;
   grade: string | null;
+  school_id: string | null;
+  class_id: string | null;
+  assessment_number: string | null;
+  stream: string | null;
+  phone_number: string | null;
   curriculum_registered: boolean;
   pathway: string | null;
   active: boolean;
@@ -45,52 +51,12 @@ const allowedOrigins = new Set([
 ]);
 const maxResourceBytes = 20 * 1024 * 1024;
 
-const usernameSchema = z.string().trim().min(3).max(30).regex(/^[a-zA-Z0-9._@#-]+$/);
 const passwordSchema = z.string().min(6).max(72);
 const gradeSchema = z.string().regex(/^Grade (?:[1-9]|1[0-2])$/);
 const emailSchema = z.string().trim().email().max(254).transform((email) => email.toLowerCase());
 
-const checkUsernameSchema = z.object({
-  name: z.string().trim().min(2).max(80),
-  username: usernameSchema,
-});
-
-const registerSchema = z.object({
-  name: z.string().trim().min(2).max(80),
-  email: emailSchema,
-  grade: gradeSchema,
-  username: usernameSchema,
-  password: passwordSchema,
-  passwordConfirmation: passwordSchema,
-}).refine((input) => input.password === input.passwordConfirmation, {
-  message: "Passwords do not match.",
-  path: ["passwordConfirmation"],
-});
-
-const verifyEmailSchema = z.object({
-  email: emailSchema,
-  code: z.string().regex(/^\d{6}$/),
-  name: z.string().trim().min(2).max(80).optional(),
-  username: usernameSchema.optional(),
-  grade: gradeSchema.optional(),
-}).superRefine((value, context) => {
-  const registrationFields = [value.name, value.username, value.grade];
-  if (registrationFields.some(Boolean) && !registrationFields.every(Boolean)) {
-    context.addIssue({
-      code: "custom",
-      path: ["name"],
-      message: "Complete all learner details to finish registration.",
-    });
-  }
-});
-
 const resendEmailSchema = z.object({
   email: emailSchema,
-});
-
-const loginSchema = z.object({
-  identifier: z.string().trim().min(3).max(254),
-  password: z.string().min(1).max(72),
 });
 
 const refreshTokenSchema = z.object({
@@ -109,16 +75,6 @@ const resetPasswordSchema = z.object({
 }).refine((input) => input.password === input.passwordConfirmation, {
   message: "Passwords do not match.",
   path: ["passwordConfirmation"],
-});
-
-const googleAuthSchema = z.object({
-  credential: z.string().min(100).max(10_000),
-  intent: z.enum(["login", "register"]),
-  grade: gradeSchema.optional(),
-  username: usernameSchema.optional(),
-}).superRefine((value, context) => {
-  if (value.intent === "register" && !value.grade) context.addIssue({ code: "custom", path: ["grade"], message: "Choose a grade to register." });
-  if (value.intent === "register" && !value.username) context.addIssue({ code: "custom", path: ["username"], message: "Choose a username to register." });
 });
 
 const lessonInputSchema = z.object({
@@ -182,6 +138,105 @@ const createInvitationSchema = z.object({
   grade: gradeSchema,
   expiresInDays: z.number().int().min(1).max(30).default(7),
 });
+const schoolNameSchema = z.string().trim().min(2).max(160).refine((value) => !/[%_*]/.test(value));
+const phoneSchema = z.string().trim().min(7).max(24).transform((value) => {
+  const digits = value.replace(/\D/g, "");
+  return digits.length === 10 && digits.startsWith("0") ? `254${digits.slice(1)}` : digits;
+}).refine((value) => /^\d{9,15}$/.test(value), "Enter a valid phone number.");
+const schoolInputSchema = z.object({
+  name: schoolNameSchema,
+  examinationCode: z.string().trim().min(2).max(40),
+  location: z.string().trim().min(2).max(200),
+  email: emailSchema.optional().or(z.literal("")),
+  poBox: z.string().trim().max(80).optional(),
+  principalName: z.string().trim().max(160).optional(),
+  principalEmail: emailSchema.optional().or(z.literal("")),
+  administratorName: z.string().trim().min(2).max(160),
+  administratorEmail: emailSchema,
+});
+const schoolClassInputSchema = z.object({
+  grade: gradeSchema,
+  stream: z.string().trim().min(1).max(20),
+  classTeacherId: z.string().uuid().optional(),
+  coordinatorId: z.string().uuid().optional(),
+});
+const schoolSubjectInputSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  maxMarks: z.number().positive().max(100_000).default(100),
+});
+const schoolStudentInputSchema = z.object({
+  classId: z.string().uuid(),
+  fullName: z.string().trim().min(2).max(160),
+  assessmentNumber: z.string().trim().min(2).max(40),
+  guardianPhone: phoneSchema,
+  subjectIds: z.array(z.string().uuid()).min(1).max(40),
+});
+const schoolTeacherInputSchema = z.object({
+  fullName: z.string().trim().min(2).max(160),
+  phoneNumber: phoneSchema,
+  accountRole: z.enum(["teacher", "class_coordinator"]).default("teacher"),
+  departmentHead: z.string().trim().max(100).optional(),
+  subjectHead: z.string().trim().max(100).optional(),
+  assignments: z.array(z.object({
+    classId: z.string().uuid(),
+    subjectId: z.string().uuid(),
+  })).min(1).max(80),
+});
+const resultWindowInputSchema = z.object({
+  grade: gradeSchema,
+  term: z.number().int().min(1).max(3),
+  half: z.enum(["mid-term", "end-term"]),
+  opensAt: z.string().datetime(),
+  deadline: z.string().datetime(),
+}).refine((value) => new Date(value.deadline) > new Date(value.opensAt), {
+  message: "The results deadline must be after the opening time.",
+  path: ["deadline"],
+});
+const studentResultInputSchema = z.object({
+  result: z.union([z.number().min(0).max(100_000), z.literal("Y")]),
+  reason: z.string().trim().min(3).max(500).optional(),
+}).superRefine((value, context) => {
+  if (value.result === "Y" && !value.reason) {
+    context.addIssue({ code: "custom", path: ["reason"], message: "Add a short reason when awarding Y." });
+  }
+});
+const reportReleaseSchema = z.object({
+  principalRemarks: z.string().trim().max(1500).default(""),
+  classTeacherRemarks: z.string().trim().max(1500).default(""),
+});
+const studentLookupSchema = z.object({
+  schoolName: schoolNameSchema,
+  assessmentNumber: z.string().trim().min(2).max(40),
+  guardianPhone: phoneSchema,
+});
+const studentSignupSchema = studentLookupSchema.extend({
+  email: emailSchema,
+  password: passwordSchema,
+  passwordConfirmation: passwordSchema,
+}).refine((value) => value.password === value.passwordConfirmation, {
+  message: "Passwords do not match.",
+  path: ["passwordConfirmation"],
+});
+const teacherSignupSchema = z.object({
+  schoolName: schoolNameSchema,
+  activationCode: z.string().trim().regex(/^[0-9a-f]{16}$/i),
+  email: emailSchema,
+  password: passwordSchema,
+  passwordConfirmation: passwordSchema,
+}).refine((value) => value.password === value.passwordConfirmation, {
+  message: "Passwords do not match.",
+  path: ["passwordConfirmation"],
+});
+const schoolLoginSchema = z.object({
+  role: z.enum(["student", "teacher", "staff"]),
+  schoolName: schoolNameSchema.optional(),
+  identifier: z.string().trim().min(2).max(40),
+  password: z.string().min(1).max(72),
+});
+const onboardingVerifySchema = z.object({
+  email: emailSchema,
+  code: z.string().regex(/^\d{6}$/),
+});
 
 function json(data: unknown, status = 200, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(data), {
@@ -217,7 +272,18 @@ function publicUser(profile: Profile): PublicUser {
 
 function userForClient(profile: Profile): Record<string, unknown> {
   const user = publicUser(profile);
-  return { id: user.id, name: user.name, username: user.username, userCode: user.user_code, role: user.role, grade: user.grade };
+  return {
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    userCode: user.user_code,
+    role: user.role,
+    grade: user.grade,
+    schoolId: profile.school_id,
+    classId: profile.class_id,
+    assessmentNumber: profile.assessment_number,
+    stream: profile.stream,
+  };
 }
 
 function authClient(): SupabaseClient {
@@ -267,6 +333,11 @@ async function authenticate(request: Request): Promise<AuthContext | Response> {
   if (error || !data.user) return fail("Your session has expired. Please sign in again.", 401);
   const profile = await profileById(data.user.id);
   if (!profile || !profile.active) return fail("This account is unavailable. Please contact your school.", 401);
+  if (!profile.email_verified && data.user.email_confirmed_at) {
+    const { error: verificationError } = await service.from("profiles").update({ email_verified: true }).eq("id", profile.id);
+    if (verificationError) throw new Error(verificationError.message);
+    profile.email_verified = true;
+  }
   if (!profile.email_verified || !data.user.email_confirmed_at) {
     return fail("Verify your email before accessing your learning space.", 401);
   }
@@ -302,16 +373,6 @@ function randomId(): string {
   return crypto.randomUUID();
 }
 
-function suggestUsernames(name: string, unavailable: Set<string>, count = 5): string[] {
-  const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 20) || "learner";
-  const suggestions: string[] = [];
-  for (let attempt = 0; attempt < 60 && suggestions.length < count; attempt += 1) {
-    const candidate = `${base}${crypto.getRandomValues(new Uint32Array(1))[0] % 9990 + 10}`;
-    if (!unavailable.has(candidate) && !suggestions.includes(candidate)) suggestions.push(candidate);
-  }
-  return suggestions;
-}
-
 async function appSession(session: { access_token: string; refresh_token: string }, userId: string): Promise<Record<string, unknown>> {
   const profile = await profileById(userId);
   if (!profile || !profile.active) throw new Error("The verified account profile is unavailable. Please contact support.");
@@ -319,143 +380,9 @@ async function appSession(session: { access_token: string; refresh_token: string
   return { token: session.access_token, refreshToken: session.refresh_token, user: userForClient(profile) };
 }
 
-async function createVerifiedStudentProfile(
-  user: { id: string; email?: string },
-  input: { name: string; username: string; grade: string },
-): Promise<void> {
-  if (!user.email) throw new Error("Verified account has no email address.");
-  const { error } = await service.from("profiles").insert({
-    id: user.id,
-    name: input.name,
-    username: input.username.toLowerCase(),
-    email: user.email.toLowerCase(),
-    email_verified: true,
-    role: "student",
-    grade: input.grade,
-  });
-  if (error?.code === "23505") {
-    throw new Error("That email or username is already associated with another platform account.");
-  }
-  if (error) throw new Error(error.message);
-}
-
-async function googleProfile(credential: string): Promise<{ email: string; name: string }> {
-  const clientId = Deno.env.get("GOOGLE_CLIENT_ID");
-  if (!clientId) throw new Error("GOOGLE_AUTH_NOT_CONFIGURED");
-  const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`, {
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!response.ok) throw new Error("GOOGLE_CREDENTIAL_REJECTED");
-  const claims: { aud?: string; iss?: string; email?: string; email_verified?: boolean | string; name?: string } = await response.json();
-  if (
-    claims.aud !== clientId
-    || !["accounts.google.com", "https://accounts.google.com"].includes(claims.iss ?? "")
-    || (claims.email_verified !== true && claims.email_verified !== "true")
-    || !claims.email
-    || !claims.name
-  ) throw new Error("GOOGLE_CREDENTIAL_REJECTED");
-  return { email: claims.email.toLowerCase(), name: claims.name.trim() };
-}
-
 async function authRoutes(request: Request, path: string): Promise<Response | null> {
   const limited = async (limit: number, seconds: number): Promise<boolean> =>
     await rateAllowed(request, path, limit, seconds);
-
-  if (request.method === "POST" && path === "/api/auth/check-username") {
-    if (!await limited(20, 900)) return fail("Too many username checks. Please wait and try again.", 429);
-    const parsed = checkUsernameSchema.safeParse(await bodyJson(request));
-    if (!parsed.success) return invalidBody(parsed);
-    const normalized = parsed.data.username.toLowerCase();
-    const { data, error } = await service.from("profiles").select("username").eq("username", normalized).limit(1);
-    if (error) throw new Error(error.message);
-    const unavailable = new Set((data as Array<{ username: string }>).map((row) => row.username.toLowerCase()));
-    if (unavailable.has(normalized)) {
-      return json({
-        available: false,
-        message: "That username is already taken. Choose one of these available options:",
-        suggestions: suggestUsernames(parsed.data.name, unavailable),
-      });
-    }
-    return json({ available: true, message: "This username is available.", suggestions: [] });
-  }
-
-  if (request.method === "POST" && path === "/api/auth/register") {
-    if (!await limited(10, 900)) return fail("Too many registration attempts. Please wait and try again.", 429);
-    const parsed = registerSchema.safeParse(await bodyJson(request));
-    if (!parsed.success) return invalidBody(parsed);
-    const input = parsed.data;
-    const { data: emailCollision, error: emailError } = await service.from("profiles").select("id")
-      .eq("email", input.email).maybeSingle();
-    if (emailError) throw new Error(emailError.message);
-    if (emailCollision) {
-      return fail("That email address is already registered. Try signing in or recovering the account.", 409);
-    }
-    const { data: usernameCollision, error: usernameError } = await service.from("profiles").select("username")
-      .eq("username", input.username.toLowerCase()).maybeSingle();
-    if (usernameError) throw new Error(usernameError.message);
-    if (usernameCollision) {
-      const unavailable = new Set([(usernameCollision as { username: string }).username.toLowerCase()]);
-      return fail("That username is already taken. Choose one of these available options:", 409, {
-        suggestions: suggestUsernames(input.name, unavailable),
-      });
-    }
-    const { data, error } = await authClient().auth.signUp({
-      email: input.email,
-      password: input.password,
-    });
-    if (error) {
-      const message = error.message.toLowerCase();
-      if (message.includes("already") || message.includes("registered")) {
-        return fail("That email address is already registered. Try signing in or recovering the account.", 409);
-      }
-      console.error("Supabase registration failed:", error.name);
-      return fail("Your account could not be created or the verification email could not be sent. Please try again later.", 503);
-    }
-    if (!data.user) return fail("Your account could not be created. Please try again.", 503);
-    return json({ message: "A verification code has been sent to your email address.", email: input.email }, 201);
-  }
-
-  if (request.method === "POST" && path === "/api/auth/verify-email") {
-    if (!await limited(10, 900)) return fail("Too many verification attempts. Please wait and try again.", 429);
-    const parsed = verifyEmailSchema.safeParse(await bodyJson(request));
-    if (!parsed.success) return invalidBody(parsed);
-    if (parsed.data.username) {
-      const { data: usernameCollision, error: usernameError } = await service.from("profiles")
-        .select("id").eq("username", parsed.data.username.toLowerCase()).limit(1);
-      if (usernameError) throw new Error(usernameError.message);
-      if (usernameCollision?.length) {
-        return fail("That username has already been taken. Choose another username before verifying your email.", 409);
-      }
-    }
-    const { data, error } = await authClient().auth.verifyOtp({
-      email: parsed.data.email,
-      token: parsed.data.code,
-      type: "signup",
-    });
-    if (error || !data.user) return fail("That verification code is invalid or has expired. Check it and try again, or request a new code.", 400);
-    const existingProfile = await profileById(data.user.id);
-    if (existingProfile) {
-      const { error: profileError } = await service.from("profiles").update({ email_verified: true }).eq("id", data.user.id);
-      if (profileError) throw new Error(profileError.message);
-    } else {
-      if (!parsed.data.name || !parsed.data.username || !parsed.data.grade) {
-        return fail("Your email is verified, but registration details are missing. Please register again or contact support.", 422);
-      }
-      try {
-        await createVerifiedStudentProfile(data.user, {
-          name: parsed.data.name,
-          username: parsed.data.username,
-          grade: parsed.data.grade,
-        });
-      } catch (profileError) {
-        if (profileError instanceof Error && profileError.message.includes("already associated")) {
-          return fail(profileError.message, 409);
-        }
-        throw profileError;
-      }
-    }
-    return json({ message: "Your email is verified. You can now sign in." });
-  }
 
   if (request.method === "POST" && path === "/api/auth/resend-verification") {
     if (!await limited(5, 3600)) return fail("Too many verification requests. Please wait and try again.", 429);
@@ -464,37 +391,6 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     const { error } = await authClient().auth.resend({ type: "signup", email: parsed.data.email });
     if (error) console.error("Supabase verification resend failed:", error.name);
     return json({ message: "If this account needs verification, a new code has been sent." }, 202);
-  }
-
-  if (request.method === "POST" && path === "/api/auth/login") {
-    if (!await limited(30, 900)) return fail("Too many sign-in attempts. Please wait and try again.", 429);
-    const parsed = loginSchema.safeParse(await bodyJson(request));
-    if (!parsed.success) return invalidBody(parsed);
-    const identifier = parsed.data.identifier.trim().toLowerCase();
-    const { data: row, error: profileError } = identifier.includes("@")
-      ? await service.from("profiles").select("email,active,email_verified").eq("email", identifier).maybeSingle()
-      : await service.from("profiles").select("email,active,email_verified").eq("username", identifier).maybeSingle();
-    if (profileError) throw new Error(profileError.message);
-    const profile = row as { email: string; active: boolean; email_verified: boolean } | null;
-    if (!profile) return fail("No account was found. Please register before signing in.", 404);
-    if (!profile.active) return fail("This account is inactive. Please contact your administrator.", 403);
-    if (!profile.email_verified) {
-      return fail("Verify your email before signing in. Enter the six-digit code we sent to your inbox.", 403);
-    }
-    const { data, error } = await authClient().auth.signInWithPassword({
-      email: profile?.email ?? identifier,
-      password: parsed.data.password,
-    });
-    if (error) {
-      if (error.message.toLowerCase().includes("email not confirmed")) {
-        return fail("Verify your email before signing in. Enter the six-digit code we sent to your inbox.", 403);
-      }
-      return fail("Email, username, or password is incorrect.", 401);
-    }
-    if (!data.session || !data.user) return fail("Email, username, or password is incorrect.", 401);
-    const output = await appSession(data.session, data.user.id);
-    await service.from("profiles").update({ last_seen_at: new Date().toISOString() }).eq("id", data.user.id);
-    return json(output);
   }
 
   if (request.method === "POST" && path === "/api/auth/refresh") {
@@ -507,58 +403,6 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     } catch {
       return fail("This account is unavailable. Please contact your school.", 401);
     }
-  }
-
-  if (request.method === "POST" && path === "/api/auth/google") {
-    if (!await limited(20, 900)) return fail("Too many Google sign-in attempts. Please wait and try again.", 429);
-    const parsed = googleAuthSchema.safeParse(await bodyJson(request));
-    if (!parsed.success) return invalidBody(parsed);
-    let identity: { email: string; name: string };
-    try {
-      identity = await googleProfile(parsed.data.credential);
-    } catch (error) {
-      if (error instanceof Error && error.message === "GOOGLE_AUTH_NOT_CONFIGURED") {
-        return fail("Google sign-in is not configured yet. Use email or username sign-in for now.", 503);
-      }
-      return fail("Google could not verify this sign-in. Please try again.", 401);
-    }
-    const { data: existing, error: lookupError } = await service.from("profiles").select("id,username")
-      .eq("email", identity.email).maybeSingle();
-    if (lookupError) throw new Error(lookupError.message);
-    if (parsed.data.intent === "login" && !existing) {
-      return fail("No active account uses this Google email. Choose Register to create a learner account.", 401);
-    }
-    if (parsed.data.intent === "register") {
-      if (existing) return fail("An account already uses this Google email. Sign in with Google instead.", 409);
-      const { data: nameCollision, error: usernameError } = await service.from("profiles").select("username")
-        .eq("username", parsed.data.username!.toLowerCase()).maybeSingle();
-      if (usernameError) throw new Error(usernameError.message);
-      if (nameCollision) return fail("That username is already taken. Choose one of these available options:", 409, {
-        suggestions: suggestUsernames(identity.name, new Set([(nameCollision as { username: string }).username.toLowerCase()])),
-      });
-    }
-    const { data, error } = await authClient().auth.signInWithIdToken({ provider: "google", token: parsed.data.credential });
-    if (error || !data.user || !data.session) {
-      console.error("Supabase Google sign-in failed:", error?.name ?? "UnknownError");
-      return fail("Google sign-in is temporarily unavailable. Please use email or username sign-in.", 503);
-    }
-    if (parsed.data.intent === "register") {
-      try {
-        await createVerifiedStudentProfile(data.user, {
-          name: identity.name,
-          username: parsed.data.username!,
-          grade: parsed.data.grade!,
-        });
-      } catch (profileError) {
-        if (profileError instanceof Error && profileError.message.includes("already associated")) {
-          return fail(profileError.message, 409);
-        }
-        throw profileError;
-      }
-    } else {
-      await service.from("profiles").update({ email_verified: true }).eq("id", data.user.id);
-    }
-    return json(await appSession(data.session, data.user.id), parsed.data.intent === "register" ? 201 : 200);
   }
 
   if (request.method === "POST" && path === "/api/auth/forgot-password") {
@@ -594,6 +438,1376 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
   return null;
 }
 
+async function schoolByName(name: string): Promise<{ id: string; name: string } | null> {
+  const { data, error } = await service.from("schools").select("id,name")
+    .ilike("name", name.trim()).eq("active", true).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as { id: string; name: string } | null;
+}
+
+async function digestHex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function createTeacherActivationCode(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function studentRosterMatch(input: z.infer<typeof studentLookupSchema>) {
+  const school = await schoolByName(input.schoolName);
+  if (!school) return null;
+  const assessmentNumber = input.assessmentNumber.trim().toUpperCase();
+  const { data, error } = await service.from("student_rosters")
+    .select("id,school_id,assessment_number,full_name,guardian_phone_hash,profile_id,school_classes!inner(id,grade,stream),student_roster_subjects(school_subjects!inner(id,name))")
+    .eq("school_id", school.id)
+    .eq("assessment_number", assessmentNumber)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  const roster = data as {
+    id: string;
+    school_id: string;
+    assessment_number: string;
+    full_name: string;
+    guardian_phone_hash: string;
+    profile_id: string | null;
+    school_classes: { id: string; grade: string; stream: string };
+    student_roster_subjects: Array<{ school_subjects: { id: string; name: string } }>;
+  } | null;
+  if (!roster || roster.profile_id || !await bcrypt.compare(input.guardianPhone, roster.guardian_phone_hash)) return null;
+  return {
+    roster,
+    school,
+    student: {
+      name: roster.full_name,
+      assessmentNumber: roster.assessment_number,
+      grade: roster.school_classes.grade,
+      stream: roster.school_classes.stream,
+      subjects: roster.student_roster_subjects.map(({ school_subjects }) => ({ id: school_subjects.id, name: school_subjects.name })),
+    },
+  };
+}
+
+async function onboardingRoutes(request: Request, path: string): Promise<Response | null> {
+  if (path === "/api/onboarding/student/lookup" && request.method === "POST") {
+    if (!await rateAllowed(request, path, 8, 900)) return fail("Too many activation attempts. Please wait and try again.", 429);
+    const parsed = studentLookupSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const match = await studentRosterMatch(parsed.data);
+    if (!match) return fail("We could not verify those details. Check them with your school and try again.", 400);
+    return json({ student: match.student });
+  }
+
+  if (path === "/api/onboarding/register-student" && request.method === "POST") {
+    if (!await rateAllowed(request, path, 5, 3600)) return fail("Too many activation attempts. Please wait and try again.", 429);
+    const parsed = studentSignupSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const input = parsed.data;
+    if (!await studentRosterMatch(input)) return fail("We could not verify those details. Check them with your school and try again.", 400);
+    const { data, error } = await authClient().auth.signUp({ email: input.email, password: input.password });
+    if (error || !data.user || data.user.identities?.length === 0) {
+      if (error) console.error("Student account signup failed:", error.name);
+      return fail("The account could not be created. Verify the email is unused, then try again.", 409);
+    }
+    const match = await studentRosterMatch(input);
+    if (!match) {
+      await service.auth.admin.deleteUser(data.user.id);
+      return fail("We could not verify those details. Check them with your school and try again.", 400);
+    }
+    const { error: claimError } = await service.from("pending_account_claims").insert({
+      user_id: data.user.id,
+      account_type: "student",
+      roster_id: match.roster.id,
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+    });
+    if (claimError) {
+      await service.auth.admin.deleteUser(data.user.id);
+      if (claimError.code === "23505") return fail("This student record is already being activated or has an account.", 409);
+      throw new Error(claimError.message);
+    }
+    return json({ message: `A verification code has been sent to ${input.email}.`, email: input.email }, 201);
+  }
+
+  if (path === "/api/onboarding/register-teacher" && request.method === "POST") {
+    if (!await rateAllowed(request, path, 5, 3600)) return fail("Too many activation attempts. Please wait and try again.", 429);
+    const parsed = teacherSignupSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const input = parsed.data;
+    const school = await schoolByName(input.schoolName);
+    if (!school) return fail("The school or activation code could not be verified.", 400);
+    const codeHash = await digestHex(input.activationCode.toLowerCase());
+    const { data: codeRow, error: codeError } = await service.from("teacher_activation_codes")
+      .select("id,teacher_id,expires_at,used_at,teacher_records!inner(id,school_id,profile_id)")
+      .eq("code_hash", codeHash).eq("teacher_records.school_id", school.id).maybeSingle();
+    if (codeError) throw new Error(codeError.message);
+    const activation = codeRow as {
+      id: string;
+      teacher_id: string;
+      expires_at: string;
+      used_at: string | null;
+      teacher_records: { id: string; school_id: string; profile_id: string | null };
+    } | null;
+    if (!activation || activation.used_at || new Date(activation.expires_at).getTime() <= Date.now() || activation.teacher_records.profile_id) {
+      return fail("The school or activation code could not be verified.", 400);
+    }
+    const { data, error } = await authClient().auth.signUp({ email: input.email, password: input.password });
+    if (error || !data.user || data.user.identities?.length === 0) {
+      if (error) console.error("Teacher account signup failed:", error.name);
+      return fail("The account could not be created. Verify the email is unused, then try again.", 409);
+    }
+    const { error: claimError } = await service.from("pending_account_claims").insert({
+      user_id: data.user.id,
+      account_type: "teacher",
+      teacher_id: activation.teacher_id,
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+    });
+    if (claimError) {
+      await service.auth.admin.deleteUser(data.user.id);
+      if (claimError.code === "23505") return fail("This teacher record is already being activated or has an account.", 409);
+      throw new Error(claimError.message);
+    }
+    return json({ message: `A verification code has been sent to ${input.email}.`, email: input.email }, 201);
+  }
+
+  if (path === "/api/onboarding/verify-email" && request.method === "POST") {
+    if (!await rateAllowed(request, path, 8, 900)) return fail("Too many verification attempts. Please wait and try again.", 429);
+    const parsed = onboardingVerifySchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const { data, error } = await authClient().auth.verifyOtp({
+      email: parsed.data.email,
+      token: parsed.data.code,
+      type: "signup",
+    });
+    if (error || !data.user?.email) return fail("That verification code is invalid or expired. Request a new code and try again.", 400);
+    const { data: claimData, error: claimError } = await service.from("pending_account_claims")
+      .select("user_id,account_type,roster_id,teacher_id,expires_at")
+      .eq("user_id", data.user.id).maybeSingle();
+    if (claimError) throw new Error(claimError.message);
+    const claim = claimData as {
+      user_id: string;
+      account_type: "student" | "teacher";
+      roster_id: string | null;
+      teacher_id: string | null;
+      expires_at: string;
+    } | null;
+    if (!claim || new Date(claim.expires_at).getTime() <= Date.now()) {
+      await service.from("pending_account_claims").delete().eq("user_id", data.user.id);
+      return fail("This activation has expired. Start activation again using your school details.", 410);
+    }
+
+    if (claim.account_type === "student" && claim.roster_id) {
+      const { data: rosterData, error: rosterError } = await service.from("student_rosters")
+        .select("id,school_id,assessment_number,full_name,class_id,school_classes!inner(grade,stream)")
+        .eq("id", claim.roster_id).is("profile_id", null).maybeSingle();
+      if (rosterError) throw new Error(rosterError.message);
+      const roster = rosterData as {
+        id: string; school_id: string; assessment_number: string; full_name: string; class_id: string;
+        school_classes: { grade: string; stream: string };
+      } | null;
+      if (!roster) return fail("This student record has already been activated. Contact the school if you need help.", 409);
+      const { error: profileError } = await service.from("profiles").insert({
+        id: data.user.id, name: roster.full_name, username: null, email: data.user.email.toLowerCase(),
+        email_verified: true, user_code: null, role: "student", grade: roster.school_classes.grade,
+        school_id: roster.school_id, class_id: roster.class_id, assessment_number: roster.assessment_number,
+        stream: roster.school_classes.stream, curriculum_registered: true, active: true,
+      });
+      if (profileError) {
+        if (profileError.code === "23505") return fail("This student record or email is already associated with an account.", 409);
+        throw new Error(profileError.message);
+      }
+      const { data: linked, error: linkError } = await service.from("student_rosters").update({ profile_id: data.user.id })
+        .eq("id", roster.id).is("profile_id", null).select("id").maybeSingle();
+      if (linkError) throw new Error(linkError.message);
+      if (!linked) {
+        await service.from("profiles").delete().eq("id", data.user.id);
+        return fail("This student record has already been activated. Contact the school if you need help.", 409);
+      }
+    } else if (claim.account_type === "teacher" && claim.teacher_id) {
+      const { data: teacherData, error: teacherError } = await service.from("teacher_records")
+        .select("id,school_id,full_name,phone_number,phone_normalized,profile_id,account_role")
+        .eq("id", claim.teacher_id).is("profile_id", null).maybeSingle();
+      if (teacherError) throw new Error(teacherError.message);
+      const teacher = teacherData as {
+        id: string; school_id: string; full_name: string; phone_number: string; phone_normalized: string; profile_id: string | null;
+        account_role: "teacher" | "class_coordinator";
+      } | null;
+      if (!teacher) return fail("This teacher record has already been activated. Contact the School Administrator.", 409);
+      const { error: profileError } = await service.from("profiles").insert({
+        id: data.user.id, name: teacher.full_name, username: null, email: data.user.email.toLowerCase(),
+        email_verified: true, user_code: null, role: teacher.account_role, grade: null, school_id: teacher.school_id,
+        phone_number: teacher.phone_number, active: true,
+      });
+      if (profileError) {
+        if (profileError.code === "23505") return fail("This email is already associated with an account.", 409);
+        throw new Error(profileError.message);
+      }
+      const { data: linked, error: linkError } = await service.from("teacher_records").update({ profile_id: data.user.id })
+        .eq("id", teacher.id).is("profile_id", null).select("id").maybeSingle();
+      if (linkError) throw new Error(linkError.message);
+      if (!linked) {
+        await service.from("profiles").delete().eq("id", data.user.id);
+        return fail("This teacher record has already been activated. Contact the School Administrator.", 409);
+      }
+      const { error: codeError } = await service.from("teacher_activation_codes")
+        .update({ used_at: new Date().toISOString() }).eq("teacher_id", teacher.id).is("used_at", null);
+      if (codeError) throw new Error(codeError.message);
+    }
+    const { error: deleteClaimError } = await service.from("pending_account_claims").delete().eq("user_id", data.user.id);
+    if (deleteClaimError) throw new Error(deleteClaimError.message);
+    return json({ message: "Your email is verified. You can now sign in with your school details." });
+  }
+
+  if (path === "/api/auth/school-login" && request.method === "POST") {
+    if (!await rateAllowed(request, path, 20, 900)) return fail("Too many sign-in attempts. Please wait and try again.", 429);
+    const parsed = schoolLoginSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const input = parsed.data;
+    const school = input.schoolName ? await schoolByName(input.schoolName) : null;
+    if (input.role !== "staff" && !school) return fail("School, account number, or password is incorrect.", 401);
+    let email: string | null = null;
+    if (input.role === "staff") {
+      const normalizedEmail = emailSchema.safeParse(input.identifier);
+      if (normalizedEmail.success) {
+        const { data, error } = await service.from("profiles").select("email,active,email_verified,role")
+          .eq("email", normalizedEmail.data).in("role", ["super_admin", "school_admin", "class_coordinator", "admin"])
+          .maybeSingle();
+        if (error) throw new Error(error.message);
+        const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
+        if (profile?.active) email = profile.email;
+      }
+    } else if (input.role === "student") {
+      const { data, error } = await service.from("profiles").select("email,active,email_verified")
+        .eq("school_id", school!.id).eq("assessment_number", input.identifier.trim().toUpperCase())
+        .eq("role", "student").maybeSingle();
+      if (error) throw new Error(error.message);
+      const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
+      if (profile?.active && profile.email_verified) email = profile.email;
+    } else {
+      const normalizedPhone = phoneSchema.safeParse(input.identifier);
+      if (normalizedPhone.success) {
+        const { data, error } = await service.from("teacher_records").select("profiles!inner(email,active,email_verified)")
+          .eq("school_id", school!.id).eq("phone_normalized", normalizedPhone.data)
+          .eq("profiles.role", "teacher").maybeSingle();
+        if (error) throw new Error(error.message);
+        const profile = (data as { profiles: { email: string; active: boolean; email_verified: boolean } } | null)?.profiles;
+        if (profile?.active && profile.email_verified) email = profile.email;
+      }
+    }
+    if (!email) return fail("School, account number, or password is incorrect.", 401);
+    const { data, error } = await authClient().auth.signInWithPassword({ email, password: input.password });
+    if (error || !data.session || !data.user) return fail("School, account number, or password is incorrect.", 401);
+    if (!data.user.email_confirmed_at) return fail("Verify your email before signing in. Check your inbox.", 403);
+    const { error: verifyError } = await service.from("profiles").update({ email_verified: true })
+      .eq("id", data.user.id).eq("email_verified", false);
+    if (verifyError) throw new Error(verifyError.message);
+    const output = await appSession(data.session, data.user.id);
+    await service.from("profiles").update({ last_seen_at: new Date().toISOString() }).eq("id", data.user.id);
+    return json(output);
+  }
+
+  return null;
+}
+
+async function schoolManagementRoutes(request: Request, path: string): Promise<Response | null> {
+  if (!path.startsWith("/api/super-admin/") && !path.startsWith("/api/school/")) return null;
+  const auth = await authenticate(request);
+  if (!isAuthContext(auth)) return auth;
+  const profile = auth.profile;
+  const isSuperAdmin = profile.role === "super_admin" || profile.role === "admin";
+
+  const activeWindowIds = async (schoolId: string, grade?: string) => {
+    const query = service.from("result_windows").select("id,grade,term,half,deadline,status")
+      .eq("school_id", schoolId).in("status", ["scheduled", "open", "closed", "coordinator_review", "admin_review", "released"]);
+    const { data, error } = grade ? await query.eq("grade", grade).order("term").order("half") : await query.order("term").order("half");
+    if (error) throw new Error(error.message);
+    const windows = data as Array<{ id: string; grade: string; term: number; half: string; deadline: string; status: string }>;
+    for (const window of windows) {
+      if (window.status === "scheduled") {
+        const { data: rawWindow, error: rawWindowError } = await service.from("result_windows").select("opens_at").eq("id", window.id).single();
+        if (rawWindowError) throw new Error(rawWindowError.message);
+        if (new Date(rawWindow.opens_at).getTime() <= Date.now()) {
+          const { error: openError } = await service.from("result_windows").update({ status: "open" }).eq("id", window.id).eq("status", "scheduled");
+          if (openError) throw new Error(openError.message);
+          window.status = "open";
+        }
+      }
+      if (window.status === "open" && new Date(window.deadline).getTime() <= Date.now()) {
+        const { error: finalizeError } = await service.from("student_results").update({
+          result_code: "X",
+          mark: null,
+          updated_at: new Date().toISOString(),
+        }).eq("window_id", window.id).eq("result_code", "pending");
+        if (finalizeError) throw new Error(finalizeError.message);
+        const { error: windowError } = await service.from("result_windows")
+          .update({ status: "coordinator_review" }).eq("id", window.id).eq("status", "open");
+        if (windowError) throw new Error(windowError.message);
+        window.status = "coordinator_review";
+      }
+    }
+    return windows;
+  };
+
+  const teacherAssignments = async (teacherId: string) => {
+    const { data, error } = await service.from("teacher_class_subjects").select("class_id,subject_id")
+      .eq("teacher_id", teacherId);
+    if (error) throw new Error(error.message);
+    return data as Array<{ class_id: string; subject_id: string }>;
+  };
+
+  const currentTeacher = async () => {
+    const { data, error } = await service.from("teacher_records").select("id,department_head")
+      .eq("profile_id", profile.id).eq("school_id", profile.school_id!).maybeSingle();
+    if (error) throw new Error(error.message);
+    return data as { id: string; department_head: string | null } | null;
+  };
+
+  if (path === "/api/school/student-overview" && request.method === "GET") {
+    if (profile.role !== "student" || !profile.school_id || !profile.class_id) {
+      return fail("This student account is not assigned to an active school class.", 403);
+    }
+    const [schoolResult, classResult, rosterResult, timetableResult] = await Promise.all([
+      service.from("schools").select("name,logo_storage_key,email,po_box").eq("id", profile.school_id).single(),
+      service.from("school_classes").select("grade,stream").eq("id", profile.class_id).single(),
+      service.from("student_rosters").select("id,student_roster_subjects(school_subjects!inner(id,name,max_marks))")
+        .eq("profile_id", profile.id).maybeSingle(),
+      service.from("school_timetables").select("id,grade,original_filename,storage_key,expires_at")
+        .eq("school_id", profile.school_id).eq("grade", profile.grade ?? "")
+        .gt("expires_at", new Date().toISOString()).order("sent_at", { ascending: false }),
+    ]);
+    for (const result of [schoolResult, classResult, rosterResult, timetableResult]) {
+      if (result.error) throw new Error(result.error.message);
+    }
+    if (!classResult.data) return fail("Your assigned class could not be found.", 404);
+    const roster = rosterResult.data as {
+      id: string;
+      student_roster_subjects: Array<{ school_subjects: Array<{ id: string; name: string; max_marks: number }> }>;
+    } | null;
+    if (!roster) return fail("Your school roster is unavailable. Contact your Class Teacher.", 404);
+    const [noticesResult, reportsResult] = await Promise.all([
+      service.from("student_notices").select("id,window_id,message,created_at")
+        .eq("roster_id", roster.id).order("created_at", { ascending: false }),
+      service.from("student_report_copies").select("id,window_id,storage_key,generated_at,expires_at")
+        .eq("roster_id", roster.id).is("deleted_at", null).gt("expires_at", new Date().toISOString())
+        .order("generated_at", { ascending: false }),
+    ]);
+    if (noticesResult.error) throw new Error(noticesResult.error.message);
+    if (reportsResult.error) throw new Error(reportsResult.error.message);
+    const reportRows = reportsResult.data as Array<{
+      id: string; window_id: string; storage_key: string; generated_at: string; expires_at: string;
+    }>;
+    const reportWindowIds = [...new Set(reportRows.map(({ window_id }) => window_id))];
+    const resultCodeResult = reportWindowIds.length
+      ? await service.from("student_results").select("window_id,result_code")
+        .eq("roster_id", roster.id).in("window_id", reportWindowIds).in("result_code", ["X", "Y"])
+      : { data: [], error: null };
+    if (resultCodeResult.error) throw new Error(resultCodeResult.error.message);
+    const withheldWindowIds = new Set((resultCodeResult.data as Array<{ window_id: string }>).map(({ window_id }) => window_id));
+    const reports = await Promise.all(reportRows.filter(({ window_id }) => !withheldWindowIds.has(window_id)).map(async (report) => {
+      const expiresIn = Math.max(1, Math.min(900, Math.floor((new Date(report.expires_at).getTime() - Date.now()) / 1000)));
+      const { data, error } = await service.storage.from("school-documents").createSignedUrl(report.storage_key, expiresIn);
+      if (error) throw new Error(error.message);
+      return { id: report.id, windowId: report.window_id, generatedAt: report.generated_at, expiresAt: report.expires_at, downloadUrl: data.signedUrl };
+    }));
+    const timetables = await Promise.all((timetableResult.data as Array<{
+      id: string; grade: string; original_filename: string; storage_key: string; expires_at: string;
+    }>).map(async (timetable) => {
+      const expiresIn = Math.max(1, Math.min(900, Math.floor((new Date(timetable.expires_at).getTime() - Date.now()) / 1000)));
+      const { data, error } = await service.storage.from("school-documents").createSignedUrl(timetable.storage_key, expiresIn);
+      if (error) throw new Error(error.message);
+      return { id: timetable.id, grade: timetable.grade, filename: timetable.original_filename, expiresAt: timetable.expires_at, downloadUrl: data.signedUrl };
+    }));
+    return json({
+      student: { name: profile.name, assessmentNumber: profile.assessment_number, grade: classResult.data.grade, stream: classResult.data.stream },
+      school: schoolResult.data,
+      subjects: roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects),
+      notices: noticesResult.data,
+      reports,
+      timetables,
+    });
+  }
+
+  const schoolAssetRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/assets\/(logo|principal-signature)$/);
+  if (schoolAssetRoute && request.method === "PUT") {
+    if (!isSuperAdmin) return fail("You do not have permission to update school branding.", 403);
+    const schoolId = decodeURIComponent(schoolAssetRoute[1]);
+    const assetName = schoolAssetRoute[2] === "logo" ? "logo_storage_key" : "principal_signature_storage_key";
+    const form = await request.formData();
+    const file = form.get("file");
+    if (!(file instanceof File) || file.size < 8 || file.size > 2 * 1024 * 1024) {
+      return fail("Choose a school image no larger than 2 MB.", 413);
+    }
+    const extension = file.type === "image/png" ? "png" : file.type === "image/jpeg" ? "jpg" : "";
+    if (!extension) return fail("School logos and signatures must be PNG or JPEG images.", 415);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const isPng = bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte);
+    const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if ((extension === "png" && !isPng) || (extension === "jpg" && !isJpeg)) {
+      return fail("The selected file does not match its declared image type.", 415);
+    }
+    const { data: current, error: currentError } = await service.from("schools")
+      .select("logo_storage_key,principal_signature_storage_key").eq("id", schoolId).maybeSingle();
+    if (currentError) throw new Error(currentError.message);
+    if (!current) return fail("This school was not found.", 404);
+    const oldKey = (current as Record<string, string | null>)[assetName];
+    const storageKey = `${schoolId}/branding/${schoolAssetRoute[2]}-${randomId()}.${extension}`;
+    const { error: uploadError } = await service.storage.from("school-documents").upload(storageKey, bytes, {
+      contentType: file.type, upsert: false,
+    });
+    if (uploadError) throw new Error(uploadError.message);
+    const { data: updated, error: updateError } = await service.from("schools")
+      .update({ [assetName]: storageKey }).eq("id", schoolId).select("id").maybeSingle();
+    if (updateError || !updated) {
+      const { error: cleanupError } = await service.storage.from("school-documents").remove([storageKey]);
+      if (cleanupError) console.error("New school image cleanup failed:", cleanupError.name);
+      if (updateError) throw new Error(updateError.message);
+      return fail("This school was not found.", 404);
+    }
+    if (oldKey) {
+      const { error: cleanupError } = await service.storage.from("school-documents").remove([oldKey]);
+      if (cleanupError) {
+        console.error("Previous school image cleanup failed:", cleanupError.name);
+        return fail("The new school image was saved, but the previous image could not be removed.", 500);
+      }
+    }
+    await recordAdminAction(profile.id, "school_branding_updated", "school", schoolId, { asset: schoolAssetRoute[2] });
+    return json({ updated: true });
+  }
+
+  if (path === "/api/super-admin/schools" && request.method === "GET") {
+    if (!isSuperAdmin) return fail("You do not have permission to view platform schools.", 403);
+    const { data, error } = await service.from("schools")
+      .select("id,name,examination_code,location,logo_storage_key,email,po_box,principal_name,active,created_at")
+      .order("name");
+    if (error) throw new Error(error.message);
+    const schools = data as Array<Record<string, unknown> & { id: string }>;
+    const [classResult, studentResult, teacherResult] = await Promise.all([
+      schools.length ? service.from("school_classes").select("school_id") : Promise.resolve({ data: [], error: null }),
+      schools.length ? service.from("student_rosters").select("school_id") : Promise.resolve({ data: [], error: null }),
+      schools.length ? service.from("teacher_records").select("school_id") : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (classResult.error) throw new Error(classResult.error.message);
+    if (studentResult.error) throw new Error(studentResult.error.message);
+    if (teacherResult.error) throw new Error(teacherResult.error.message);
+    const countBySchool = (rows: Array<{ school_id: string }>) => {
+      const counts = new Map<string, number>();
+      rows.forEach(({ school_id }) => counts.set(school_id, (counts.get(school_id) ?? 0) + 1));
+      return counts;
+    };
+    const classes = countBySchool(classResult.data as Array<{ school_id: string }>);
+    const students = countBySchool(studentResult.data as Array<{ school_id: string }>);
+    const teachers = countBySchool(teacherResult.data as Array<{ school_id: string }>);
+    return json({ schools: schools.map((school) => ({
+      ...school,
+      classCount: classes.get(school.id) ?? 0,
+      studentCount: students.get(school.id) ?? 0,
+      teacherCount: teachers.get(school.id) ?? 0,
+    })) });
+  }
+
+  if (path === "/api/super-admin/schools" && request.method === "POST") {
+    if (!isSuperAdmin) return fail("You do not have permission to onboard schools.", 403);
+    const parsed = schoolInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const input = parsed.data;
+    const schoolId = randomId();
+    const { data, error } = await service.from("schools").insert({
+      id: schoolId,
+      name: input.name,
+      examination_code: input.examinationCode.trim().toUpperCase(),
+      location: input.location,
+      email: input.email || null,
+      po_box: input.poBox || null,
+      principal_name: input.principalName || null,
+      principal_email: input.principalEmail || null,
+      created_by: profile.id,
+    }).select("id,name,examination_code,location").single();
+    if (error?.code === "23505") return fail("A school with that name or examination code is already registered.", 409);
+    if (error) throw new Error(error.message);
+    const { data: invited, error: inviteError } = await service.auth.admin.inviteUserByEmail(input.administratorEmail, {
+      data: { name: input.administratorName },
+    });
+    if (inviteError || !invited.user) {
+      await service.from("schools").delete().eq("id", schoolId);
+      if (inviteError) console.error("School administrator invitation failed:", inviteError.name);
+      return fail("The school was not created because its administrator invitation could not be sent.", 503);
+    }
+    const { error: adminProfileError } = await service.from("profiles").insert({
+      id: invited.user.id,
+      name: input.administratorName,
+      username: null,
+      email: input.administratorEmail,
+      email_verified: false,
+      user_code: null,
+      role: "school_admin",
+      school_id: schoolId,
+      active: true,
+    });
+    if (adminProfileError) {
+      await service.auth.admin.deleteUser(invited.user.id);
+      await service.from("schools").delete().eq("id", schoolId);
+      if (adminProfileError.code === "23505") return fail("That administrator email already belongs to another platform account.", 409);
+      throw new Error(adminProfileError.message);
+    }
+    await recordAdminAction(profile.id, "school_created", "school", schoolId, { name: input.name });
+    return json({ school: data, administratorInvitationSent: true }, 201);
+  }
+
+  if (path === "/api/school/overview" && request.method === "GET") {
+    if (!profile.school_id || !["school_admin", "class_coordinator", "teacher"].includes(profile.role)) {
+      return fail("You do not have permission to view this school dashboard.", 403);
+    }
+    const [schoolResult, classResult, studentResult, teacherResult] = await Promise.all([
+      service.from("schools").select("id,name,examination_code,location,logo_storage_key,email,po_box,principal_name")
+        .eq("id", profile.school_id).single(),
+      service.from("school_classes").select("id,grade,stream,class_teacher_id,coordinator_id")
+        .eq("school_id", profile.school_id).order("grade").order("stream"),
+      service.from("student_rosters").select("id,class_id").eq("school_id", profile.school_id),
+      service.from("teacher_records").select("id").eq("school_id", profile.school_id),
+    ]);
+    for (const result of [schoolResult, classResult, studentResult, teacherResult]) {
+      if (result.error) throw new Error(result.error.message);
+    }
+    const allClasses = classResult.data as Array<{ id: string; grade: string; stream: string; class_teacher_id: string | null; coordinator_id: string | null }>;
+    let visibleClasses = allClasses;
+    if (profile.role === "class_coordinator") {
+      visibleClasses = allClasses.filter((row) => row.coordinator_id === profile.id);
+    } else if (profile.role === "teacher") {
+      const { data: teacherRecord, error: teacherError } = await service.from("teacher_records").select("id")
+        .eq("profile_id", profile.id).maybeSingle();
+      if (teacherError) throw new Error(teacherError.message);
+      const assignmentClassIds = teacherRecord
+        ? await service.from("teacher_class_subjects").select("class_id").eq("teacher_id", teacherRecord.id)
+        : { data: [], error: null };
+      if (assignmentClassIds.error) throw new Error(assignmentClassIds.error.message);
+      const assigned = new Set((assignmentClassIds.data as Array<{ class_id: string }>).map(({ class_id }) => class_id));
+      visibleClasses = allClasses.filter((row) => row.class_teacher_id === profile.id || assigned.has(row.id));
+    }
+    const visibleClassIds = new Set(visibleClasses.map(({ id }) => id));
+    const students = (studentResult.data as Array<{ id: string; class_id: string }>)
+      .filter((row) => visibleClassIds.has(row.class_id));
+    return json({
+      school: schoolResult.data,
+      counts: {
+        classes: visibleClasses.length,
+        students: students.length,
+        teachers: profile.role === "school_admin" ? (teacherResult.data?.length ?? 0) : undefined,
+      },
+      classes: visibleClasses.map((classRow) => ({
+        ...classRow,
+        studentCount: students.filter((student) => student.class_id === classRow.id).length,
+      })),
+    });
+  }
+
+  if (path.startsWith("/api/school/") && (!profile.school_id || !["student", "school_admin", "class_coordinator", "teacher"].includes(profile.role))) {
+    return fail("You do not have permission to access school records.", 403);
+  }
+
+  if (path === "/api/school/classes" && request.method === "GET") {
+    const { data, error } = await service.from("school_classes")
+      .select("id,grade,stream,class_teacher_id,coordinator_id")
+      .eq("school_id", profile.school_id!).order("grade").order("stream");
+    if (error) throw new Error(error.message);
+    if (profile.role === "school_admin") return json({ classes: data });
+    const classRows = data as Array<{ id: string; class_teacher_id: string | null; coordinator_id: string | null }>;
+    if (profile.role === "class_coordinator") {
+      return json({ classes: classRows.filter((row) => row.coordinator_id === profile.id) });
+    }
+    const { data: teacherRecord, error: teacherError } = await service.from("teacher_records").select("id")
+      .eq("profile_id", profile.id).maybeSingle();
+    if (teacherError) throw new Error(teacherError.message);
+    const assignedResult = teacherRecord
+      ? await service.from("teacher_class_subjects").select("class_id").eq("teacher_id", teacherRecord.id)
+      : { data: [], error: null };
+    if (assignedResult.error) throw new Error(assignedResult.error.message);
+    const assigned = new Set((assignedResult.data as Array<{ class_id: string }>).map(({ class_id }) => class_id));
+    return json({ classes: classRows.filter((row) => row.class_teacher_id === profile.id || assigned.has(row.id)) });
+  }
+
+  if (path === "/api/school/classes" && request.method === "POST") {
+    if (profile.role !== "school_admin") return fail("Only the School Administrator can create classes.", 403);
+    const parsed = schoolClassInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const assignmentIds = [parsed.data.classTeacherId, parsed.data.coordinatorId].filter((id): id is string => Boolean(id));
+    if (assignmentIds.length) {
+      const { data: assignedProfiles, error: assignmentError } = await service.from("profiles")
+        .select("id,role,school_id").in("id", assignmentIds).eq("school_id", profile.school_id!);
+      if (assignmentError) throw new Error(assignmentError.message);
+      const profileById = new Map((assignedProfiles as Array<{ id: string; role: string }>).map((assigned) => [assigned.id, assigned]));
+      if (parsed.data.classTeacherId && profileById.get(parsed.data.classTeacherId)?.role !== "teacher") {
+        return fail("Choose an active teacher from this school as the Class Teacher.", 400);
+      }
+      if (parsed.data.coordinatorId && profileById.get(parsed.data.coordinatorId)?.role !== "class_coordinator") {
+        return fail("Choose an authorized Class Coordinator from this school.", 400);
+      }
+    }
+    const { data, error } = await service.from("school_classes").insert({
+      school_id: profile.school_id,
+      grade: parsed.data.grade,
+      stream: parsed.data.stream,
+      class_teacher_id: parsed.data.classTeacherId ?? null,
+      coordinator_id: parsed.data.coordinatorId ?? null,
+    }).select("id,grade,stream").single();
+    if (error?.code === "23505") return fail("That grade and stream already exist in this school.", 409);
+    if (error) throw new Error(error.message);
+    await recordAdminAction(profile.id, "class_created", "school_class", data.id, { grade: data.grade, stream: data.stream });
+    return json({ class: data }, 201);
+  }
+
+  if (path === "/api/school/subjects" && request.method === "GET") {
+    const { data, error } = await service.from("school_subjects").select("id,name,max_marks")
+      .eq("school_id", profile.school_id!).order("name");
+    if (error) throw new Error(error.message);
+    return json({ subjects: data });
+  }
+
+  if (path === "/api/school/subjects" && request.method === "POST") {
+    if (profile.role !== "school_admin") return fail("Only the School Administrator can manage subjects.", 403);
+    const parsed = schoolSubjectInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const { data, error } = await service.from("school_subjects").insert({
+      school_id: profile.school_id,
+      name: parsed.data.name,
+      max_marks: parsed.data.maxMarks,
+    }).select("id,name,max_marks").single();
+    if (error?.code === "23505") return fail("That subject already exists in this school.", 409);
+    if (error) throw new Error(error.message);
+    await recordAdminAction(profile.id, "subject_created", "school_subject", data.id, { name: data.name });
+    return json({ subject: data }, 201);
+  }
+
+  if (path === "/api/school/students" && request.method === "GET") {
+    let classIds: string[] = [];
+    if (profile.role === "school_admin") {
+      const { data, error } = await service.from("school_classes").select("id").eq("school_id", profile.school_id!);
+      if (error) throw new Error(error.message);
+      classIds = (data as Array<{ id: string }>).map(({ id }) => id);
+    } else if (profile.role === "class_coordinator") {
+      const { data, error } = await service.from("school_classes").select("id")
+        .eq("school_id", profile.school_id!).eq("coordinator_id", profile.id);
+      if (error) throw new Error(error.message);
+      classIds = (data as Array<{ id: string }>).map(({ id }) => id);
+    } else {
+      const [{ data: teacherRecord, error: teacherError }, { data: classTeacherRows, error: classError }] = await Promise.all([
+        service.from("teacher_records").select("id").eq("profile_id", profile.id).maybeSingle(),
+        service.from("school_classes").select("id").eq("school_id", profile.school_id!).eq("class_teacher_id", profile.id),
+      ]);
+      if (teacherError) throw new Error(teacherError.message);
+      if (classError) throw new Error(classError.message);
+      const { data: assignmentRows, error: assignmentError } = teacherRecord
+        ? await service.from("teacher_class_subjects").select("class_id").eq("teacher_id", teacherRecord.id)
+        : { data: [], error: null };
+      if (assignmentError) throw new Error(assignmentError.message);
+      classIds = [...new Set([
+        ...(classTeacherRows as Array<{ id: string }>).map(({ id }) => id),
+        ...(assignmentRows as Array<{ class_id: string }>).map(({ class_id }) => class_id),
+      ])];
+    }
+    if (!classIds.length) return json({ students: [] });
+    const { data, error } = await service.from("student_rosters")
+      .select("id,full_name,assessment_number,profile_id,class_id,school_classes!inner(grade,stream)")
+      .eq("school_id", profile.school_id!).in("class_id", classIds).order("full_name");
+    if (error) throw new Error(error.message);
+    return json({ students: data });
+  }
+
+  if (path === "/api/school/teachers" && request.method === "GET") {
+    if (profile.role !== "school_admin" && profile.role !== "teacher") return fail("Only school staff can view the teacher directory.", 403);
+    const { data, error } = await service.from("teacher_records")
+      .select("id,profile_id,account_role,full_name,phone_number,department_head,subject_head,teacher_class_subjects(class_id,subject_id)")
+      .eq("school_id", profile.school_id!).order("full_name");
+    if (error) throw new Error(error.message);
+    const rows = data as Array<{
+      id: string; profile_id: string | null; account_role: string; full_name: string; phone_number: string;
+      department_head: string | null; subject_head: string | null;
+      teacher_class_subjects: Array<{ class_id: string; subject_id: string }>;
+    }>;
+    if (profile.role === "school_admin") return json({ teachers: rows });
+    const current = await currentTeacher();
+    if (!current?.department_head) return json({ teachers: [] });
+    return json({ teachers: rows.filter((row) => row.department_head === current.department_head).map((row) => ({
+      id: row.id, full_name: row.full_name, department_head: row.department_head,
+      assignments: row.teacher_class_subjects,
+    })) });
+  }
+
+  const schoolSubjectUpdate = path.match(/^\/api\/school\/subjects\/([^/]+)$/);
+  if (schoolSubjectUpdate && request.method === "PUT") {
+    if (!["school_admin", "class_coordinator"].includes(profile.role)) {
+      return fail("Only the School Administrator or Class Coordinator can update subject maximum marks.", 403);
+    }
+    const parsed = schoolSubjectInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const subjectId = decodeURIComponent(schoolSubjectUpdate[1]);
+    const { data, error } = await service.from("school_subjects")
+      .update({ name: parsed.data.name, max_marks: parsed.data.maxMarks })
+      .eq("id", subjectId).eq("school_id", profile.school_id!)
+      .select("id,name,max_marks").maybeSingle();
+    if (error?.code === "23505") return fail("That subject name already exists in this school.", 409);
+    if (error) throw new Error(error.message);
+    if (!data) return fail("This school subject was not found.", 404);
+    await recordAdminAction(profile.id, "subject_maximum_updated", "school_subject", subjectId, {
+      name: data.name,
+      maxMarks: data.max_marks,
+    });
+    return json({ subject: data });
+  }
+
+  if (path === "/api/school/students" && request.method === "POST") {
+    const input = schoolStudentInputSchema.safeParse(await bodyJson(request));
+    if (!input.success) return invalidBody(input);
+    const classResult = await service.from("school_classes").select("id,class_teacher_id")
+      .eq("id", input.data.classId).eq("school_id", profile.school_id!).maybeSingle();
+    if (classResult.error) throw new Error(classResult.error.message);
+    if (!classResult.data) return fail("Choose a class in your school.", 404);
+    if (profile.role !== "school_admin" && (profile.role !== "teacher" || classResult.data.class_teacher_id !== profile.id)) {
+      return fail("Only the assigned Class Teacher or School Administrator can add students to this class.", 403);
+    }
+    const { data: subjects, error: subjectsError } = await service.from("school_subjects").select("id")
+      .eq("school_id", profile.school_id!).in("id", input.data.subjectIds);
+    if (subjectsError) throw new Error(subjectsError.message);
+    if ((subjects as Array<{ id: string }>).length !== new Set(input.data.subjectIds).size) {
+      return fail("Choose only subjects configured for this school.", 400);
+    }
+    const { data, error } = await service.from("student_rosters").insert({
+      school_id: profile.school_id,
+      class_id: input.data.classId,
+      assessment_number: input.data.assessmentNumber.trim().toUpperCase(),
+      full_name: input.data.fullName,
+      guardian_phone_hash: await bcrypt.hash(input.data.guardianPhone, 12),
+      created_by: profile.id,
+    }).select("id,assessment_number,full_name,class_id").single();
+    if (error?.code === "23505") return fail("That assessment number is already registered in this school.", 409);
+    if (error) throw new Error(error.message);
+    const { error: registrationError } = await service.from("student_roster_subjects").insert(
+      input.data.subjectIds.map((subjectId) => ({ roster_id: data.id, subject_id: subjectId })),
+    );
+    if (registrationError) {
+      await service.from("student_rosters").delete().eq("id", data.id);
+      throw new Error(registrationError.message);
+    }
+    await recordAdminAction(profile.id, "student_rostered", "student_roster", data.id, { assessmentNumber: data.assessment_number });
+    return json({ student: data }, 201);
+  }
+
+  if (path === "/api/school/teachers" && request.method === "POST") {
+    if (profile.role !== "school_admin") return fail("Only the School Administrator can onboard teachers.", 403);
+    const input = schoolTeacherInputSchema.safeParse(await bodyJson(request));
+    if (!input.success) return invalidBody(input);
+    const classIds = [...new Set(input.data.assignments.map(({ classId }) => classId))];
+    const subjectIds = [...new Set(input.data.assignments.map(({ subjectId }) => subjectId))];
+    const [classesResult, subjectsResult] = await Promise.all([
+      service.from("school_classes").select("id").eq("school_id", profile.school_id!).in("id", classIds),
+      service.from("school_subjects").select("id").eq("school_id", profile.school_id!).in("id", subjectIds),
+    ]);
+    if (classesResult.error) throw new Error(classesResult.error.message);
+    if (subjectsResult.error) throw new Error(subjectsResult.error.message);
+    if (classesResult.data.length !== classIds.length || subjectsResult.data.length !== subjectIds.length) {
+      return fail("All teacher assignments must belong to this school.", 400);
+    }
+    const { data: teacher, error } = await service.from("teacher_records").insert({
+      school_id: profile.school_id,
+      account_role: input.data.accountRole,
+      full_name: input.data.fullName,
+      phone_number: input.data.phoneNumber,
+      phone_normalized: input.data.phoneNumber,
+      department_head: input.data.departmentHead || null,
+      subject_head: input.data.subjectHead || null,
+      created_by: profile.id,
+    }).select("id,full_name,phone_number,department_head,subject_head,account_role").single();
+    if (error?.code === "23505") return fail("That phone number is already registered for a teacher in this school.", 409);
+    if (error) throw new Error(error.message);
+    const activationCode = createTeacherActivationCode();
+    const { error: codeError } = await service.from("teacher_activation_codes").insert({
+      teacher_id: teacher.id,
+      code_hash: await digestHex(activationCode),
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString(),
+      created_by: profile.id,
+    });
+    if (codeError) {
+      await service.from("teacher_records").delete().eq("id", teacher.id);
+      throw new Error(codeError.message);
+    }
+    const { error: assignmentsError } = await service.from("teacher_class_subjects").insert(input.data.assignments.map((assignment) => ({
+      teacher_id: teacher.id,
+      class_id: assignment.classId,
+      subject_id: assignment.subjectId,
+    })));
+    if (assignmentsError) {
+      await service.from("teacher_records").delete().eq("id", teacher.id);
+      throw new Error(assignmentsError.message);
+    }
+    await recordAdminAction(profile.id, "teacher_onboarded", "teacher_record", teacher.id, { name: teacher.full_name });
+    return json({ teacher, activationCode }, 201);
+  }
+
+  if (path === "/api/school/result-windows" && request.method === "GET") {
+    const windows = await activeWindowIds(profile.school_id!);
+    return json({ windows });
+  }
+
+  const resultWindowMatch = path.match(/^\/api\/school\/result-windows\/([^/]+)(?:\/(submit|release))?$/);
+  if (resultWindowMatch && request.method === "GET" && !resultWindowMatch[2]) {
+    const windowId = decodeURIComponent(resultWindowMatch[1]);
+    const { data: window, error } = await service.from("result_windows")
+      .select("id,grade,term,half,deadline,status")
+      .eq("id", windowId).eq("school_id", profile.school_id!).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!window) return fail("This results window was not found.", 404);
+    const [classesResult, teacherRecord] = await Promise.all([
+      service.from("school_classes").select("id,class_teacher_id,coordinator_id,stream")
+        .eq("school_id", profile.school_id!).eq("grade", window.grade),
+      profile.role === "teacher" ? currentTeacher() : Promise.resolve(null),
+    ]);
+    if (classesResult.error) throw new Error(classesResult.error.message);
+    const classes = classesResult.data as Array<{ id: string; class_teacher_id: string | null; coordinator_id: string | null; stream: string }>;
+    let visibleClassIds = classes.map(({ id }) => id);
+    let allowedSubjectIds: Set<string> | null = null;
+    if (profile.role === "class_coordinator") {
+      visibleClassIds = classes.filter(({ coordinator_id }) => coordinator_id === profile.id).map(({ id }) => id);
+    } else if (profile.role === "teacher") {
+      const classTeacherIds = classes.filter(({ class_teacher_id }) => class_teacher_id === profile.id).map(({ id }) => id);
+      const assignments = teacherRecord ? await teacherAssignments(teacherRecord.id) : [];
+      const classIds = [...new Set([...classTeacherIds, ...assignments.map(({ class_id }) => class_id)])];
+      visibleClassIds = classIds.filter((id) => classes.some((row) => row.id === id));
+      allowedSubjectIds = new Set(assignments.map(({ subject_id }) => subject_id));
+    } else if (profile.role !== "school_admin") {
+      return fail("You do not have permission to view these results.", 403);
+    }
+    if (!visibleClassIds.length) return json({ window, results: [] });
+    const { data: rosterRows, error: rosterError } = await service.from("student_rosters")
+      .select("id,full_name,assessment_number,class_id,student_roster_subjects(school_subjects!inner(id,name,max_marks))")
+      .in("class_id", visibleClassIds);
+    if (rosterError) throw new Error(rosterError.message);
+    const rosters = rosterRows as Array<{
+      id: string; full_name: string; assessment_number: string; class_id: string;
+      student_roster_subjects: Array<{ school_subjects: Array<{ id: string; name: string; max_marks: number }> }>;
+    }>;
+    const { data: resultRows, error: resultsError } = await service.from("student_results")
+      .select("id,roster_id,subject_id,mark,result_code,entered_by")
+      .eq("window_id", windowId).in("roster_id", rosters.map(({ id }) => id));
+    if (resultsError) throw new Error(resultsError.message);
+    const rows = resultRows as Array<{ id: string; roster_id: string; subject_id: string; mark: number | null; result_code: string; entered_by: string | null }>;
+    return json({ window, results: rosters.flatMap((roster) => {
+      const classRow = classes.find(({ id }) => id === roster.class_id);
+      return roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects)
+        .filter((schoolSubject) => !allowedSubjectIds || allowedSubjectIds.has(schoolSubject.id))
+        .map((school_subjects) => ({
+          rosterId: roster.id,
+          studentName: roster.full_name,
+          assessmentNumber: roster.assessment_number,
+          classId: roster.class_id,
+          stream: classRow?.stream ?? "",
+          subjectId: school_subjects.id,
+          subjectName: school_subjects.name,
+          maxMarks: school_subjects.max_marks,
+          ...(rows.find((row) => row.roster_id === roster.id && row.subject_id === school_subjects.id)
+            ? { result: rows.find((row) => row.roster_id === roster.id && row.subject_id === school_subjects.id) }
+            : {}),
+        }));
+    }) });
+  }
+
+  const resultEntry = path.match(/^\/api\/school\/result-windows\/([^/]+)\/students\/([^/]+)\/subjects\/([^/]+)$/);
+  if (resultEntry && request.method === "PUT") {
+    if (profile.role !== "teacher") return fail("Only an assigned subject teacher can enter marks.", 403);
+    const parsed = studentResultInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const windowId = decodeURIComponent(resultEntry[1]);
+    const rosterId = decodeURIComponent(resultEntry[2]);
+    const subjectId = decodeURIComponent(resultEntry[3]);
+    const teacher = await currentTeacher();
+    if (!teacher) return fail("Your teacher record is not active.", 403);
+    const assignments = await teacherAssignments(teacher.id);
+    if (!assignments.some(({ subject_id }) => subject_id === subjectId)) return fail("You are not assigned to this subject.", 403);
+    const { data: window, error: windowError } = await service.from("result_windows")
+      .select("id,grade,deadline,status").eq("id", windowId).eq("school_id", profile.school_id!).maybeSingle();
+    if (windowError) throw new Error(windowError.message);
+    if (!window || window.status !== "open" || new Date(window.deadline).getTime() <= Date.now()) {
+      return fail("This results-entry window is not open.", 409);
+    }
+    const { data: roster, error: rosterError } = await service.from("student_rosters")
+      .select("id,class_id,school_classes!inner(grade,school_id)")
+      .eq("id", rosterId).eq("school_id", profile.school_id!).maybeSingle();
+    if (rosterError) throw new Error(rosterError.message);
+    const rosterClass = (roster?.school_classes as Array<{ grade: string; school_id: string }> | undefined)?.[0];
+    if (!roster || !rosterClass || rosterClass.grade !== window.grade) {
+      return fail("This student is outside the results window's grade.", 403);
+    }
+    if (!assignments.some(({ class_id, subject_id: assignedSubject }) => class_id === roster.class_id && assignedSubject === subjectId)) {
+      return fail("You are not assigned to this class and subject.", 403);
+    }
+    const { data: registeredSubject, error: subjectError } = await service.from("student_roster_subjects")
+      .select("roster_id").eq("roster_id", rosterId).eq("subject_id", subjectId).maybeSingle();
+    if (subjectError) throw new Error(subjectError.message);
+    if (!registeredSubject) return fail("This subject is not part of the student's school record.", 400);
+    const { data: subject, error: marksError } = await service.from("school_subjects")
+      .select("max_marks").eq("id", subjectId).eq("school_id", profile.school_id!).single();
+    if (marksError) throw new Error(marksError.message);
+    if (typeof parsed.data.result === "number" && parsed.data.result > subject.max_marks) {
+      return fail(`The mark cannot exceed this subject's maximum of ${subject.max_marks}.`, 400);
+    }
+    const { data, error } = await service.from("student_results").update({
+      mark: typeof parsed.data.result === "number" ? parsed.data.result : null,
+      result_code: parsed.data.result === "Y" ? "Y" : "mark",
+      reason: parsed.data.reason ?? null,
+      entered_by: profile.id,
+      entered_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq("window_id", windowId).eq("roster_id", rosterId).eq("subject_id", subjectId)
+      .eq("result_code", "pending").select("id,result_code,mark").maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return fail("This result was already entered or is no longer editable.", 409);
+    await recordAdminAction(profile.id, parsed.data.result === "Y" ? "student_result_disqualified" : "student_result_entered",
+      "student_result", data.id, {
+        subjectId,
+        rosterId,
+        result: parsed.data.result,
+        reason: parsed.data.reason ?? null,
+      });
+    return json({ result: data });
+  }
+
+  if (path === "/api/school/result-windows" && request.method === "POST") {
+    if (profile.role !== "school_admin") return fail("Only the School Administrator can open results entry.", 403);
+    const parsed = resultWindowInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const classesResult = await service.from("school_classes").select("id")
+      .eq("school_id", profile.school_id!).eq("grade", parsed.data.grade);
+    if (classesResult.error) throw new Error(classesResult.error.message);
+    const classIds = (classesResult.data as Array<{ id: string }>).map(({ id }) => id);
+    if (!classIds.length) return fail("Create the grade and its streams before opening results entry.", 409);
+    const { data: existing, error: existingError } = await service.from("result_windows").select("id")
+      .eq("school_id", profile.school_id!).eq("grade", parsed.data.grade).eq("term", parsed.data.term).eq("half", parsed.data.half).maybeSingle();
+    if (existingError) throw new Error(existingError.message);
+    if (existing) return fail("A results window already exists for this grade, term, and half-term.", 409);
+    const windowId = randomId();
+    const { error: windowError } = await service.from("result_windows").insert({
+      id: windowId,
+      school_id: profile.school_id,
+      grade: parsed.data.grade,
+      term: parsed.data.term,
+      half: parsed.data.half,
+      opens_at: parsed.data.opensAt,
+      deadline: parsed.data.deadline,
+      status: new Date(parsed.data.opensAt).getTime() <= Date.now() ? "open" : "scheduled",
+      opened_by: profile.id,
+    });
+    if (windowError) throw new Error(windowError.message);
+    const { data: rosterRows, error: rosterError } = await service.from("student_rosters")
+      .select("id,student_roster_subjects(subject_id)").in("class_id", classIds);
+    if (rosterError) throw new Error(rosterError.message);
+    const results = (rosterRows as Array<{ id: string; student_roster_subjects: Array<{ subject_id: string }> }>)
+      .flatMap((roster) => roster.student_roster_subjects.map(({ subject_id }) => ({
+        window_id: windowId,
+        roster_id: roster.id,
+        subject_id,
+        result_code: "pending",
+      })));
+    if (results.length) {
+      const { error } = await service.from("student_results").insert(results);
+      if (error) {
+        await service.from("result_windows").delete().eq("id", windowId);
+        throw new Error(error.message);
+      }
+    }
+    await recordAdminAction(profile.id, "results_window_opened", "result_window", windowId, {
+      grade: parsed.data.grade, term: parsed.data.term, half: parsed.data.half,
+    });
+    return json({ windowId, resultCount: results.length }, 201);
+  }
+
+  if (resultWindowMatch && request.method === "POST" && resultWindowMatch[2] === "submit") {
+    const windowId = decodeURIComponent(resultWindowMatch[1]);
+    if (profile.role !== "class_coordinator") return fail("Only a Class Coordinator can submit grade analysis.", 403);
+    const { data: resultWindow, error } = await service.from("result_windows").select("id,school_id,grade,status")
+      .eq("id", windowId).eq("school_id", profile.school_id!).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!resultWindow || resultWindow.grade !== profile.grade) return fail("This results window is outside your assigned grade.", 403);
+    if (resultWindow.status !== "coordinator_review") return fail("This results window is not ready for coordinator submission.", 409);
+    const { data: classes, error: classesError } = await service.from("school_classes").select("id")
+      .eq("school_id", profile.school_id!).eq("grade", resultWindow.grade).eq("coordinator_id", profile.id);
+    if (classesError) throw new Error(classesError.message);
+    if (!classes?.length) return fail("You are not assigned as coordinator for this grade.", 403);
+    const { error: updateError } = await service.from("result_windows").update({ status: "admin_review" }).eq("id", windowId);
+    if (updateError) throw new Error(updateError.message);
+    await recordAdminAction(profile.id, "grade_results_submitted", "result_window", windowId);
+    return json({ submitted: true });
+  }
+
+  if (resultWindowMatch && request.method === "POST" && resultWindowMatch[2] === "release") {
+    if (profile.role !== "school_admin") return fail("Only the School Administrator can generate and send student reports.", 403);
+    const parsed = reportReleaseSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const windowId = decodeURIComponent(resultWindowMatch[1]);
+    const { data: resultWindow, error: windowError } = await service.from("result_windows")
+      .select("id,school_id,grade,term,half,status,principal_remarks")
+      .eq("id", windowId).eq("school_id", profile.school_id!).maybeSingle();
+    if (windowError) throw new Error(windowError.message);
+    if (!resultWindow) return fail("This results window was not found.", 404);
+    if (resultWindow.status !== "admin_review") return fail("The Class Coordinator must submit the grade results before reports can be generated.", 409);
+    const classesResult = await service.from("school_classes").select("id,stream,class_teacher_id")
+      .eq("school_id", profile.school_id!).eq("grade", resultWindow.grade);
+    if (classesResult.error) throw new Error(classesResult.error.message);
+    const classes = classesResult.data as Array<{ id: string; stream: string; class_teacher_id: string | null }>;
+    const classIds = classes.map(({ id }) => id);
+    if (!classIds.length) return fail("No classes are configured for this grade.", 409);
+    const allRosterResults = await Promise.all(classIds.map((classId) => service.from("student_rosters")
+      .select("id,full_name,assessment_number,class_id,profile_id,student_roster_subjects(school_subjects!inner(id,name,max_marks))")
+      .eq("school_id", profile.school_id!).eq("class_id", classId)));
+    if (allRosterResults.some((result) => result.error)) throw new Error(allRosterResults.find((result) => result.error)?.error?.message ?? "Student rosters could not be read.");
+    const rosters = allRosterResults.flatMap((result) => result.data as Array<{
+      id: string; full_name: string; assessment_number: string; class_id: string; profile_id: string | null;
+      student_roster_subjects: Array<{ school_subjects: Array<{ id: string; name: string; max_marks: number }> }>;
+    }>);
+    const historicalResult = await service.from("student_results")
+      .select("roster_id,subject_id,mark,result_code,result_windows!inner(term,half)")
+      .in("roster_id", rosters.map(({ id }) => id)).neq("window_id", windowId);
+    if (historicalResult.error) throw new Error(historicalResult.error.message);
+    const historical = historicalResult.data as Array<{
+      roster_id: string; subject_id: string; mark: number | null; result_code: string;
+      result_windows: Array<{ term: number; half: string }>;
+    }>;
+    const currentResult = await service.from("student_results").select("roster_id,subject_id,mark,result_code")
+      .eq("window_id", windowId);
+    if (currentResult.error) throw new Error(currentResult.error.message);
+    const current = currentResult.data as Array<{ roster_id: string; subject_id: string; mark: number | null; result_code: string }>;
+    const byRosterSubject = new Map(current.map((result) => [`${result.roster_id}:${result.subject_id}`, result]));
+    const schoolResult = await service.from("schools").select("name,examination_code,logo_storage_key,principal_signature_storage_key,email,po_box,principal_name")
+      .eq("id", profile.school_id!).single();
+    if (schoolResult.error) throw new Error(schoolResult.error.message);
+    const school = schoolResult.data as {
+      name: string; examination_code: string; logo_storage_key: string | null;
+      principal_signature_storage_key: string | null; email: string | null; po_box: string | null; principal_name: string | null;
+    };
+    const deniedCount = { count: 0 };
+    const performances = rosters.flatMap((roster) => {
+      const rosterSubjects = roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects);
+      const marks = rosterSubjects.map((schoolSubject) =>
+        byRosterSubject.get(`${roster.id}:${schoolSubject.id}`));
+      if (!marks.length || marks.some((result) => !result || result.result_code !== "mark" || result.mark === null)) return [];
+      const score = marks.reduce((total, result) => total + (result?.mark ?? 0), 0);
+      const maxScore = rosterSubjects.reduce((total, schoolSubject) => total + schoolSubject.max_marks, 0);
+      return [{ rosterId: roster.id, classId: roster.class_id, score, maxScore, percent: maxScore ? score / maxScore * 100 : 0 }];
+    });
+    for (const roster of rosters) {
+      if (!roster.profile_id) continue;
+      const subjectResults = roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects.map((subject) => ({
+        subject,
+        current: byRosterSubject.get(`${roster.id}:${subject.id}`),
+      })));
+      const hasMissingCode = subjectResults.some(({ current: result }) => !result || result.result_code === "pending");
+      const disqualifying = subjectResults.some(({ current: result }) => result?.result_code === "X" || result?.result_code === "Y");
+      if (hasMissingCode) return fail("Some marks are still pending. Complete results entry before releasing reports.", 409);
+      if (disqualifying) {
+        const markedCodes = subjectResults.filter(({ current: result }) => result?.result_code === "X" || result?.result_code === "Y");
+        const reason = markedCodes.some(({ current: result }) => result?.result_code === "Y")
+          ? "YOU DID NOT RECEIVE YOUR REPORT BECAUSE A SUBJECT TEACHER RECORDED Y FOR AN EXAMINATION. SPEAK WITH YOUR SCHOOL, LEARN FROM THIS EXPERIENCE, AND MAKE A BETTER CHOICE NEXT TIME."
+          : "YOU DID NOT RECEIVE YOUR REPORT BECAUSE YOU DID NOT SIT ONE OR MORE EXAMINATIONS. SPEAK WITH YOUR SCHOOL AND MAKE EVERY EFFORT TO SIT YOUR EXAMINATIONS NEXT TIME.";
+        const { error } = await service.from("student_notices").upsert({
+          roster_id: roster.id, window_id: windowId, message: reason,
+        }, { onConflict: "roster_id,window_id" });
+        if (error) throw new Error(error.message);
+        deniedCount.count += 1;
+        continue;
+      }
+
+      const classRecord = classes.find(({ id }) => id === roster.class_id);
+      const latestScores = subjectResults.map(({ subject, current: result }) => {
+        const prior = historical.filter((row) => row.roster_id === roster.id && row.subject_id === subject.id
+          && row.result_code === "mark" && row.mark !== null)
+          .sort((a, b) => a.result_windows[0].term - b.result_windows[0].term
+            || (a.result_windows[0].half === "mid-term" ? -1 : 1) - (b.result_windows[0].half === "mid-term" ? -1 : 1));
+        const previous = prior[prior.length - 1]?.mark ?? null;
+        return { subject, result, previous, deviation: result?.mark != null && previous != null ? result.mark - previous : null };
+      });
+      const rows = latestScores.map(({ subject, result, previous, deviation }) =>
+        `${subject.name}: ${result?.mark ?? 0}/${subject.max_marks} | Previous: ${previous ?? "-"} | Change: ${deviation === null ? "N/A" : `${deviation > 0 ? "+" : ""}${deviation}`}`);
+      const ownPerformance = performances.find(({ rosterId }) => rosterId === roster.id);
+      const streamPosition = ownPerformance
+        ? performances.filter((entry) => entry.classId === roster.class_id && entry.percent > ownPerformance.percent).length + 1
+        : null;
+      const gradePosition = ownPerformance
+        ? performances.filter((entry) => entry.percent > ownPerformance.percent).length + 1
+        : null;
+      const history = historical.filter((row) => row.roster_id === roster.id)
+        .sort((a, b) => a.result_windows[0].term - b.result_windows[0].term
+          || (a.result_windows[0].half === "mid-term" ? -1 : 1) - (b.result_windows[0].half === "mid-term" ? -1 : 1))
+        .map((row) => {
+          const subject = roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects).find((item) => item.id === row.subject_id)?.name ?? "Subject";
+          return `Term ${row.result_windows[0].term} ${row.result_windows[0].half}: ${subject} ${row.mark ?? row.result_code}`;
+        });
+      const pdf = await PDFDocument.create();
+      pdf.setTitle(`${school.name} report - ${roster.full_name}`);
+      pdf.setAuthor("Vortex Learning");
+      let page = pdf.addPage([595, 842]);
+      const coverPage = page;
+      const font = await pdf.embedFont("Helvetica");
+      let y = 805;
+      const draw = (text: string, size = 10, color = rgb(0.12, 0.2, 0.23)) => {
+        const lines = text.match(/.{1,88}(?:\s|$)|.{1,88}/g) ?? [text];
+        for (const line of lines) {
+          if (y < 48) { page = pdf.addPage([595, 842]); y = 805; }
+          page.drawText(line.trim(), { x: 48, y, size, font, color });
+          y -= size + 5;
+        }
+      };
+      draw(school.name, 18);
+      draw(`${school.email ?? ""}  ${school.po_box ?? ""}`);
+      draw(`TERM ${resultWindow.term.toString().toUpperCase()} · ${resultWindow.half.toUpperCase()} · ${resultWindow.grade} ${classRecord?.stream ?? ""}`, 12);
+      draw(`Student: ${roster.full_name} | Assessment: ${roster.assessment_number}`);
+      draw(`Stream position: ${streamPosition ?? "N/A"} | Grade position: ${gradePosition ?? "N/A"} | Total: ${ownPerformance?.score ?? 0}/${ownPerformance?.maxScore ?? 0}`);
+      draw("SUBJECT RESULTS", 12);
+      for (const row of rows) draw(row);
+      draw("PERFORMANCE GRAPH", 12);
+      const chartX = 64;
+      const chartY = Math.max(80, y - 100);
+      const chartWidth = 460;
+      const chartHeight = 74;
+      page.drawLine({ start: { x: chartX, y: chartY }, end: { x: chartX + chartWidth, y: chartY }, thickness: 1, color: rgb(0.5, 0.6, 0.62) });
+      page.drawLine({ start: { x: chartX, y: chartY }, end: { x: chartX, y: chartY + chartHeight }, thickness: 1, color: rgb(0.5, 0.6, 0.62) });
+      const points = latestScores.map(({ subject, result }) => ({
+        label: subject.name.slice(0, 8),
+        score: result?.mark != null ? Math.max(0, Math.min(100, result.mark / subject.max_marks * 100)) : 0,
+      }));
+      const pointX = (index: number) => chartX + 14 + index * (chartWidth - 28) / Math.max(1, points.length - 1);
+      const pointY = (score: number) => chartY + score / 100 * chartHeight;
+      points.forEach((point, index) => {
+        page.drawCircle({ x: pointX(index), y: pointY(point.score), size: 3, color: rgb(0.05, 0.48, 0.43) });
+        page.drawText(point.label, { x: pointX(index) - 12, y: chartY - 14, size: 7, font });
+        if (index > 0) page.drawLine({
+          start: { x: pointX(index - 1), y: pointY(points[index - 1].score) },
+          end: { x: pointX(index), y: pointY(point.score) },
+          thickness: 1.4,
+          color: rgb(0.05, 0.48, 0.43),
+        });
+      });
+      y = chartY - 36;
+      draw("PREVIOUS TERMS", 12);
+      for (const item of history) draw(item, 8);
+      draw(`Principal's remarks: ${parsed.data.principalRemarks}`, 9);
+      draw(`Class teacher's remarks: ${parsed.data.classTeacherRemarks}`, 9);
+      const principalSignaturePage = page;
+      const principalSignatureY = y - 10;
+      draw(`Principal: ${school.principal_name ?? "________________"}  Signature: __________________`, 9);
+      draw("Class Teacher: __________________  Signature: __________________", 9);
+      coverPage.drawText("VORTEX LEARNING", { x: 48, y: 28, size: 8, font, color: rgb(0.12, 0.2, 0.23) });
+      const embedSchoolImage = async (storageKey: string) => {
+        const { data: imageData, error: imageError } = await service.storage.from("school-documents").download(storageKey);
+        if (imageError) throw new Error(imageError.message);
+        const imageBytes = new Uint8Array(await imageData.arrayBuffer());
+        return storageKey.toLowerCase().endsWith(".png")
+          ? await pdf.embedPng(imageBytes)
+          : await pdf.embedJpg(imageBytes);
+      };
+      if (school.logo_storage_key) {
+        const logo = await embedSchoolImage(school.logo_storage_key);
+        coverPage.drawImage(logo, { x: 485, y: 770, width: 64, height: 48 });
+      }
+      if (school.principal_signature_storage_key) {
+        const signature = await embedSchoolImage(school.principal_signature_storage_key);
+        principalSignaturePage.drawImage(signature, { x: 435, y: principalSignatureY - 12, width: 100, height: 28 });
+      }
+      const pdfBytes = await pdf.save();
+      const storageKey = `${profile.school_id}/${windowId}/${roster.id}/${randomId()}.pdf`;
+      const { error: uploadError } = await service.storage.from("school-documents").upload(storageKey, pdfBytes, {
+        contentType: "application/pdf", upsert: false,
+      });
+      if (uploadError) throw new Error(uploadError.message);
+      const generatedAt = new Date();
+      const expiresAt = new Date(generatedAt.getTime() + 30 * 24 * 60 * 60_000);
+      const { error: copyError } = await service.from("student_report_copies").upsert({
+        window_id: windowId, roster_id: roster.id, storage_key: storageKey,
+        generated_by: profile.id, generated_at: generatedAt.toISOString(), expires_at: expiresAt.toISOString(), deleted_at: null,
+      }, { onConflict: "window_id,roster_id" });
+      if (copyError) {
+        await service.storage.from("school-documents").remove([storageKey]);
+        throw new Error(copyError.message);
+      }
+    }
+    const { error: releaseError } = await service.from("result_windows").update({
+      status: "released",
+      principal_remarks: parsed.data.principalRemarks,
+      class_teacher_remarks: parsed.data.classTeacherRemarks,
+    }).eq("id", windowId);
+    if (releaseError) throw new Error(releaseError.message);
+    await recordAdminAction(profile.id, "student_reports_released", "result_window", windowId, { withheldStudents: deniedCount.count });
+    return json({ released: true, withheldStudents: deniedCount.count });
+  }
+
+  const reportCopyDelete = path.match(/^\/api\/school\/reports\/([^/]+)$/);
+  if (path === "/api/school/reports" && request.method === "GET") {
+    if (!["school_admin", "class_coordinator"].includes(profile.role)) return fail("Only school administrators and coordinators can manage report copies.", 403);
+    let classQuery = service.from("school_classes").select("id,grade,stream")
+      .eq("school_id", profile.school_id!);
+    if (profile.role === "class_coordinator") classQuery = classQuery.eq("coordinator_id", profile.id);
+    const { data: classRows, error: classError } = await classQuery;
+    if (classError) throw new Error(classError.message);
+    const classes = classRows as Array<{ id: string; grade: string; stream: string }>;
+    const classIds = classes.map(({ id }) => id);
+    if (!classIds.length) return json({ reports: [] });
+    const { data: rosterRows, error: rosterError } = await service.from("student_rosters")
+      .select("id,full_name,class_id").eq("school_id", profile.school_id!).in("class_id", classIds);
+    if (rosterError) throw new Error(rosterError.message);
+    const rosters = rosterRows as Array<{ id: string; full_name: string; class_id: string }>;
+    if (!rosters.length) return json({ reports: [] });
+    const { data: reportRows, error: reportError } = await service.from("student_report_copies")
+      .select("id,roster_id,window_id,storage_key,generated_at,expires_at")
+      .in("roster_id", rosters.map(({ id }) => id)).is("deleted_at", null)
+      .order("generated_at", { ascending: false });
+    if (reportError) throw new Error(reportError.message);
+    const reports = reportRows as Array<{
+      id: string; roster_id: string; window_id: string; storage_key: string; generated_at: string; expires_at: string;
+    }>;
+    const { data: windowRows, error: windowError } = reports.length
+      ? await service.from("result_windows").select("id,term,half").in("id", [...new Set(reports.map(({ window_id }) => window_id))])
+      : { data: [], error: null };
+    if (windowError) throw new Error(windowError.message);
+    const windowsById = new Map((windowRows as Array<{ id: string; term: number; half: string }>).map((row) => [row.id, row]));
+    const rostersById = new Map(rosters.map((row) => [row.id, row]));
+    const classesById = new Map(classes.map((row) => [row.id, row]));
+    return json({
+      reports: await Promise.all(reports.map(async (report) => {
+        const expiresAt = new Date(report.expires_at);
+        let downloadUrl: string | null = null;
+        if (expiresAt.getTime() > Date.now()) {
+          const { data: signed, error: signedError } = await service.storage.from("school-documents").createSignedUrl(
+            report.storage_key, Math.max(1, Math.min(900, Math.floor((expiresAt.getTime() - Date.now()) / 1000))),
+          );
+          if (signedError) throw new Error(signedError.message);
+          downloadUrl = signed.signedUrl;
+        }
+        return {
+          id: report.id, studentName: rostersById.get(report.roster_id)?.full_name ?? "Student",
+          grade: classesById.get(rostersById.get(report.roster_id)?.class_id ?? "")?.grade ?? "",
+          stream: classesById.get(rostersById.get(report.roster_id)?.class_id ?? "")?.stream ?? "",
+          term: windowsById.get(report.window_id)?.term ?? null,
+          half: windowsById.get(report.window_id)?.half ?? "",
+          generatedAt: report.generated_at, expiresAt: report.expires_at, downloadUrl,
+        };
+      })),
+    });
+  }
+
+  if (reportCopyDelete && request.method === "DELETE") {
+    if (!["school_admin", "class_coordinator"].includes(profile.role)) return fail("You do not have permission to delete report copies.", 403);
+    const id = decodeURIComponent(reportCopyDelete[1]);
+    let query = service.from("student_report_copies").select("id,storage_key,window_id,roster_id").eq("id", id).is("deleted_at", null);
+    if (profile.role === "school_admin") query = query;
+    const { data, error } = await query.maybeSingle();
+    if (error) throw new Error(error.message);
+    const report = data as { id: string; storage_key: string; window_id: string; roster_id: string } | null;
+    if (!report) return fail("This report copy was not found.", 404);
+    const { data: roster, error: rosterError } = await service.from("student_rosters").select("school_id,class_id")
+      .eq("id", report.roster_id).maybeSingle();
+    if (rosterError) throw new Error(rosterError.message);
+    if (!roster || roster.school_id !== profile.school_id) return fail("You do not have permission to delete this report.", 403);
+    if (profile.role === "class_coordinator") {
+      const { data: classRow, error: classError } = await service.from("school_classes").select("grade,coordinator_id")
+        .eq("id", roster.class_id).maybeSingle();
+      if (classError) throw new Error(classError.message);
+      if (!classRow || classRow.coordinator_id !== profile.id) return fail("This report is outside your assigned grade.", 403);
+    }
+    const { error: deleteError } = await service.from("student_report_copies")
+      .update({ deleted_at: new Date().toISOString() }).eq("id", id);
+    if (deleteError) throw new Error(deleteError.message);
+    const { error: storageError } = await service.storage.from("school-documents").remove([report.storage_key]);
+    if (storageError) throw new Error(storageError.message);
+    await recordAdminAction(profile.id, "student_report_deleted", "student_report", id);
+    return empty();
+  }
+
+  if (path === "/api/school/timetables" && request.method === "GET") {
+    let grades: string[] = [];
+    if (profile.role === "school_admin") {
+      const { data, error } = await service.from("school_classes").select("grade").eq("school_id", profile.school_id!);
+      if (error) throw new Error(error.message);
+      grades = [...new Set((data as Array<{ grade: string }>).map(({ grade }) => grade))];
+    } else if (profile.role === "student") {
+      grades = profile.grade ? [profile.grade] : [];
+    } else if (profile.role === "class_coordinator") {
+      const { data, error } = await service.from("school_classes").select("grade")
+        .eq("school_id", profile.school_id!).eq("coordinator_id", profile.id);
+      if (error) throw new Error(error.message);
+      grades = [...new Set((data as Array<{ grade: string }>).map(({ grade }) => grade))];
+    } else {
+      const teacher = await currentTeacher();
+      const assignments = teacher ? await teacherAssignments(teacher.id) : [];
+      const classIds = [...new Set(assignments.map(({ class_id }) => class_id))];
+      const { data, error } = classIds.length
+        ? await service.from("school_classes").select("grade").eq("school_id", profile.school_id!).in("id", classIds)
+        : { data: [], error: null };
+      if (error) throw new Error(error.message);
+      grades = [...new Set((data as Array<{ grade: string }>).map(({ grade }) => grade))];
+    }
+    if (!grades.length) return json({ timetables: [] });
+    const { data, error } = await service.from("school_timetables")
+      .select("id,grade,original_filename,storage_key,expires_at")
+      .eq("school_id", profile.school_id!).in("grade", grades).gt("expires_at", new Date().toISOString())
+      .order("sent_at", { ascending: false });
+    if (error) throw new Error(error.message);
+    const timetables = await Promise.all((data as Array<{
+      id: string; grade: string; original_filename: string; storage_key: string; expires_at: string;
+    }>).map(async (item) => {
+      const expiresIn = Math.max(1, Math.min(900, Math.floor((new Date(item.expires_at).getTime() - Date.now()) / 1000)));
+      const { data: signed, error: signedError } = await service.storage.from("school-documents").createSignedUrl(item.storage_key, expiresIn);
+      if (signedError) throw new Error(signedError.message);
+      return { id: item.id, grade: item.grade, filename: item.original_filename, expiresAt: item.expires_at, downloadUrl: signed.signedUrl };
+    }));
+    return json({ timetables });
+  }
+
+  if (path === "/api/school/timetables" && request.method === "POST") {
+    if (profile.role !== "school_admin") return fail("Only the School Administrator can share a timetable.", 403);
+    const form = await request.formData();
+    const grade = gradeSchema.safeParse(form.get("grade"));
+    const file = form.get("file");
+    if (!grade.success || !(file instanceof File)) return fail("Choose a grade and a timetable file.", 400);
+    if (file.size < 8 || file.size > maxResourceBytes) return fail("Timetable files must be no larger than 20 MB.", 413);
+    const extension = file.name.toLowerCase().split(".").pop() ?? "";
+    const allowedTypes: Record<string, { mime: string; signature: (bytes: Uint8Array) => boolean }> = {
+      pdf: { mime: "application/pdf", signature: (bytes) => bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 },
+      png: { mime: "image/png", signature: (bytes) => bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 },
+      jpg: { mime: "image/jpeg", signature: (bytes) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
+      jpeg: { mime: "image/jpeg", signature: (bytes) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
+      webp: { mime: "image/webp", signature: (bytes) => String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP" },
+    };
+    const spec = allowedTypes[extension];
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!spec || !spec.signature(bytes) || (file.type && file.type !== spec.mime)) {
+      return fail("Upload a valid PDF, PNG, JPEG, or WebP timetable.", 400);
+    }
+    const { data: classRows, error: classError } = await service.from("school_classes").select("id")
+      .eq("school_id", profile.school_id!).eq("grade", grade.data);
+    if (classError) throw new Error(classError.message);
+    if (!classRows?.length) return fail("There are no classes configured for this grade.", 409);
+    const storageKey = `${profile.school_id}/timetables/${randomId()}.${extension}`;
+    const { error: uploadError } = await service.storage.from("school-documents").upload(storageKey, bytes, {
+      contentType: spec.mime, upsert: false,
+    });
+    if (uploadError) throw new Error(uploadError.message);
+    const sentAt = new Date();
+    const expiresAt = new Date(sentAt.getTime() + 7 * 24 * 60 * 60_000);
+    const { data, error } = await service.from("school_timetables").insert({
+      school_id: profile.school_id,
+      grade: grade.data,
+      storage_key: storageKey,
+      original_filename: file.name.slice(0, 200),
+      created_by: profile.id,
+      sent_at: sentAt.toISOString(),
+      expires_at: expiresAt.toISOString(),
+    }).select("id,grade,original_filename,expires_at").single();
+    if (error) {
+      await service.storage.from("school-documents").remove([storageKey]);
+      throw new Error(error.message);
+    }
+    await recordAdminAction(profile.id, "school_timetable_shared", "school_timetable", data.id, { grade: grade.data });
+    return json({ timetable: data }, 201);
+  }
+
+  return null;
+}
+
 async function studentRoutes(request: Request, path: string, url: URL): Promise<Response | null> {
   if (path === "/api/me" && request.method === "GET") {
     const auth = await authenticate(request);
@@ -604,7 +1818,6 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
     "/api/presence",
     "/api/profile",
     "/api/curriculum/registration",
-    "/api/students/lookup",
     "/api/dashboard",
     "/api/exams",
     "/api/results",
@@ -628,6 +1841,7 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
   }
 
   if (path === "/api/profile" && request.method === "PATCH") {
+    if (user.school_id) return fail("School-managed student details can only be changed by authorized school staff.", 403);
     const parsed = updateProfileSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     if (user.curriculum_registered && user.grade !== parsed.data.grade) {
@@ -655,7 +1869,7 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
       name: pathway.name,
       shortName: pathway.shortName,
       description: pathway.description,
-      subjects: subjects.filter((subject) => pathway.subjects.includes(subject.name) && !seniorCompulsorySubjects.includes(subject.name as typeof seniorCompulsorySubjects[number])),
+      subjects: subjects.filter((subject) => new Set<string>(pathway.subjects).has(subject.name) && !seniorCompulsorySubjects.includes(subject.name as typeof seniorCompulsorySubjects[number])),
     })) : [];
     const { data: selected, error: registrationError } = await service.from("student_subject_registrations")
       .select("subject_id").eq("user_id", user.id);
@@ -674,6 +1888,7 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
   }
 
   if (path === "/api/curriculum/registration" && request.method === "POST") {
+    if (user.school_id) return fail("Your school manages your grade and subject registration.", 403);
     const parsed = curriculumRegistrationSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     const number = gradeNumber(user.grade);
@@ -684,7 +1899,7 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
     const { data: rows, error } = await service.from("subjects").select("id,name").eq("grade", user.grade);
     if (error) throw new Error(error.message);
     const subjects = rows as Array<{ id: string; name: string }>;
-    const pathwayNames = new Set(seniorPathways.find((pathway) => pathway.id === parsed.data.pathway)?.subjects ?? []);
+    const pathwayNames = new Set<string>(seniorPathways.find((pathway) => pathway.id === parsed.data.pathway)?.subjects ?? []);
     const allowed = new Set(subjects.filter((subject) => number < 10 || pathwayNames.has(subject.name)).map((subject) => subject.id));
     if (parsed.data.subjectIds.some((id) => !allowed.has(id))) {
       return fail("One or more selected subjects are not available for your grade and pathway.", 400);
@@ -702,17 +1917,6 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
     });
     if (saveError) throw new Error(saveError.message);
     return json({ message: "Your grade-specific subject registration has been saved." });
-  }
-
-  if (path === "/api/students/lookup" && request.method === "GET") {
-    if (!await rateAllowed(request, path, 20, 60)) return fail("Too many student lookups. Please wait and try again.", 429);
-    const parsed = z.string().trim().toUpperCase().regex(/^VX-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/).safeParse(url.searchParams.get("code"));
-    if (!parsed.success) return fail("Enter a valid student code.", 400);
-    const { data, error } = await service.from("profiles").select("user_code,name,grade")
-      .eq("user_code", parsed.data).eq("role", "student").eq("active", true).maybeSingle();
-    if (error) throw new Error(error.message);
-    const record = data as { user_code: string; name: string; grade: string | null } | null;
-    return json({ student: record ? { userCode: record.user_code, name: record.name, grade: record.grade } : null });
   }
 
   const resourceFile = path.match(/^\/api\/resources\/([^/]+)\/file$/);
@@ -906,13 +2110,18 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
     const { data: attempts, error: attemptError } = await service.from("attempts")
       .select("id,assessment_id,status,score,total_points").eq("user_id", user.id);
     if (attemptError) throw new Error(attemptError.message);
-    const attemptMap = new Map((attempts as Array<Attempt & { assessment_id: string }>).map((attempt) => [attempt.assessment_id, attempt]));
+    const attemptMap = new Map((attempts as Array<{
+      id: string; assessment_id: string; status: Attempt["status"]; score: number | null; total_points: number | null;
+    }>).map((attempt) => [attempt.assessment_id, attempt]));
     return json({
-      exams: (exams as Array<Assessment & { subjects: { name: string } }>).map((exam) => {
+      exams: (exams as Array<{
+        id: string; title: string; kind: string; duration_minutes: number; opens_at: string; subject_id: string;
+        subjects: Array<{ name: string; grade: string }>;
+      }>).map((exam) => {
         const attempt = attemptMap.get(exam.id);
         return {
           id: exam.id, title: exam.title, kind: exam.kind, duration_minutes: exam.duration_minutes,
-          opens_at: exam.opens_at, subject_name: exam.subjects.name,
+          opens_at: exam.opens_at, subject_name: exam.subjects[0].name,
           attempt_id: attempt?.id ?? null, attempt_status: attempt?.status ?? null,
           score: attempt?.score ?? null, total_points: attempt?.total_points ?? null,
         };
@@ -927,12 +2136,15 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
       .eq("id", examId).eq("published", true).eq("subjects.grade", user.grade ?? "").maybeSingle();
     if (error) throw new Error(error.message);
     if (!exam) return fail("This examination is not available.", 404);
-    const assessment = exam as Assessment & { subjects: { grade: string } };
+    const assessment = exam as {
+      id: string; duration_minutes: number; opens_at: string; subject_id: string;
+      subjects: Array<{ grade: string }>;
+    };
     const { data: registration, error: registrationError } = await service.from("student_subject_registrations")
       .select("subject_id").eq("user_id", user.id).eq("subject_id", assessment.subject_id).maybeSingle();
     if (registrationError) throw new Error(registrationError.message);
     if (!registration) return fail("This examination is not available.", 404);
-    if (new Date(assessment.opens_at).getTime() > Date.now()) return fail("This examination is not open yet.", 409);
+    if (!assessment.subjects.length || new Date(assessment.opens_at).getTime() > Date.now()) return fail("This examination is not open yet.", 409);
     let { data: attempt, error: attemptError } = await service.from("attempts").select("*")
       .eq("user_id", user.id).eq("assessment_id", examId).maybeSingle();
     if (attemptError) throw new Error(attemptError.message);
@@ -988,9 +2200,12 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
     const { data: attempt, error } = await service.from("attempts").select("id,status,started_at,assessment_id,assessments!inner(duration_minutes)")
       .eq("id", decodeURIComponent(answerRoute[1])).eq("user_id", user.id).maybeSingle();
     if (error) throw new Error(error.message);
-    if (!attempt || (attempt as Attempt).status !== "in_progress") return fail("This active examination attempt was not found.", 404);
-    const current = attempt as Attempt & { assessments: { duration_minutes: number } };
-    if (Date.now() > new Date(current.started_at).getTime() + current.assessments.duration_minutes * 60_000) {
+    const current = attempt as {
+      id: string; status: Attempt["status"]; started_at: string; assessment_id: string;
+      assessments: Array<{ duration_minutes: number }>;
+    } | null;
+    if (!current || current.status !== "in_progress" || !current.assessments.length) return fail("This active examination attempt was not found.", 404);
+    if (Date.now() > new Date(current.started_at).getTime() + current.assessments[0].duration_minutes * 60_000) {
       await service.from("attempts").update({ status: "submitted", submitted_at: new Date().toISOString() }).eq("id", current.id).eq("status", "in_progress");
       return fail("The examination time has ended; answers can no longer be changed.", 409);
     }
@@ -1043,10 +2258,13 @@ async function studentRoutes(request: Request, path: string, url: URL): Promise<
       .eq("user_id", user.id).in("status", ["submitted", "marked"]).order("submitted_at", { ascending: false });
     if (error) throw new Error(error.message);
     return json({
-      results: (attempts as Array<Attempt & { assessments: { title: string; subjects: { name: string } } }>).map((attempt) => ({
+      results: (attempts as Array<{
+        id: string; status: Attempt["status"]; score: number | null; total_points: number | null; submitted_at: string | null;
+        assessments: Array<{ title: string; subjects: Array<{ name: string }> }>;
+      }>).map((attempt) => ({
         attempt_id: attempt.id,
-        title: attempt.assessments.title,
-        subject_name: attempt.assessments.subjects.name,
+        title: attempt.assessments[0].title,
+        subject_name: attempt.assessments[0].subjects[0].name,
         status: attempt.status,
         score: attempt.score,
         total_points: attempt.total_points,
@@ -1187,12 +2405,12 @@ async function adminRoutes(request: Request, path: string, url: URL): Promise<Re
       resources: (data as Array<{
         id: string; subject_id: string; title: string; description: string; topic: string; term: string;
         category: string; status: string; original_filename: string | null; size_bytes: number | null;
-        created_at: string; updated_at: string; subjects: { name: string; grade: string };
+        created_at: string; updated_at: string; subjects: Array<{ name: string; grade: string }>;
       }>).map((resource) => ({
         id: resource.id,
         subjectId: resource.subject_id,
-        subjectName: resource.subjects.name,
-        grade: resource.subjects.grade,
+        subjectName: resource.subjects[0].name,
+        grade: resource.subjects[0].grade,
         title: resource.title,
         description: resource.description,
         topic: resource.topic,
@@ -1360,7 +2578,9 @@ async function adminRoutes(request: Request, path: string, url: URL): Promise<Re
     ]);
     if (lessonResult.error) throw new Error(lessonResult.error.message);
     if (assessmentResult.error) throw new Error(assessmentResult.error.message);
-    const assessments = assessmentResult.data as Array<Assessment & { subjects: { name: string; grade: string }; id: string }>;
+    const assessments = assessmentResult.data as Array<Assessment & {
+      subjects: Array<{ name: string; grade: string; sort_order: number }>;
+    }>;
     const ids = assessments.map((assessment) => assessment.id);
     const [questionResult, attemptResult] = ids.length
       ? await Promise.all([
@@ -1376,11 +2596,14 @@ async function adminRoutes(request: Request, path: string, url: URL): Promise<Re
       attemptCounts.set(attempt.assessment_id, (attemptCounts.get(attempt.assessment_id) ?? 0) + 1);
     }
     return json({
-      lessons: (lessonResult.data as Array<Lesson & { subjects: { name: string; grade: string } }>).map((lesson) => ({
+      lessons: (lessonResult.data as Array<{
+        id: string; subject_id: string; content_type: string; title: string; summary: string; content: string;
+        subjects: Array<{ name: string; grade: string; sort_order: number }>;
+      }>).map((lesson) => ({
         id: lesson.id,
         subjectId: lesson.subject_id,
-        subjectName: lesson.subjects.name,
-        grade: lesson.subjects.grade,
+        subjectName: lesson.subjects[0].name,
+        grade: lesson.subjects[0].grade,
         type: lesson.content_type,
         title: lesson.title,
         summary: lesson.summary,
@@ -1390,8 +2613,8 @@ async function adminRoutes(request: Request, path: string, url: URL): Promise<Re
         id: assessment.id,
         title: assessment.title,
         subjectId: assessment.subject_id,
-        subjectName: assessment.subjects.name,
-        grade: assessment.subjects.grade,
+        subjectName: assessment.subjects[0].name,
+        grade: assessment.subjects[0].grade,
         kind: assessment.kind,
         durationMinutes: assessment.duration_minutes,
         opensAt: assessment.opens_at,
@@ -1546,8 +2769,12 @@ Deno.serve(async (request) => {
     if (path === "/api/health" && request.method === "GET") {
       return addCors(json({ status: "ok" }), origin);
     }
+    const onboardingResponse = await onboardingRoutes(request, path);
+    if (onboardingResponse) return addCors(onboardingResponse, origin);
     const authResponse = await authRoutes(request, path);
     if (authResponse) return addCors(authResponse, origin);
+    const schoolResponse = await schoolManagementRoutes(request, path);
+    if (schoolResponse) return addCors(schoolResponse, origin);
     const studentResponse = await studentRoutes(request, path, url);
     if (studentResponse) return addCors(studentResponse, origin);
     const adminResponse = await adminRoutes(request, path, url);

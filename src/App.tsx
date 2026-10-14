@@ -15,10 +15,8 @@ import {
   FileText,
   Flame,
   GraduationCap,
-  Headphones,
   Home,
   Menu,
-  MessageCircle,
   MoreHorizontal,
   LogOut,
   Search,
@@ -26,11 +24,10 @@ import {
   Sparkles,
   Target,
   UsersRound,
-  Video,
   X,
 } from "lucide-react";
-import AuthScreen from "./AuthScreen";
-import OwnerDashboard from "./OwnerDashboard";
+import SchoolAuthScreen from "./SchoolAuthScreen";
+import SchoolPortals from "./SchoolPortals";
 import { apiRequest, clearToken, getToken, supportEmail, type Course, type DashboardData, type UpcomingExam, type User } from "./api";
 import Brand from "./Brand";
 import LearningPages from "./LearningPages";
@@ -81,8 +78,11 @@ function App() {
   }, []);
 
   if (checkingSession) return <div className="auth-loading"><span className="loading-mark"><GraduationCap size={22} /></span><span>Opening your learning space…</span></div>;
-  if (!user) return <AuthScreen onAuthenticated={setUser} />;
-  if (user.role === "admin") return <OwnerDashboard user={user} onLogout={() => { clearToken(); setUser(null); }} />;
+  if (!user) return <SchoolAuthScreen onAuthenticated={setUser} />;
+  if (user.role === "student" || user.role === "admin" || user.role === "super_admin" || user.role === "school_admin"
+    || user.role === "class_coordinator" || user.role === "teacher" || user.schoolId) {
+    return <SchoolPortals user={user} onLogout={() => { clearToken(); setUser(null); }} />;
+  }
   if (adminRoute) return <AdminAccessNotice onLogout={() => { clearToken(); setUser(null); }} />;
   if (user.role !== "student") return <RoleNotice user={user} onLogout={() => { clearToken(); setUser(null); }} />;
   return <StudentDashboard key={user.id} user={user} onLogout={() => { clearToken(); setUser(null); }} />;
@@ -107,12 +107,13 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [studentName, setStudentName] = useState(user.name);
   const [studentGrade, setStudentGrade] = useState(user.grade ?? "");
+  const [studentCode, setStudentCode] = useState(user.userCode);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
   const [activeExam, setActiveExam] = useState<ExamAttempt | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [showRoom, setShowRoom] = useState(false);
+  const [showStudyGroup, setShowStudyGroup] = useState(false);
   const [activeCourse, setActiveCourse] = useState<Course | null>(null);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState("");
@@ -138,6 +139,7 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
         setDashboard(data);
         setStudentName(data.student.name);
         setStudentGrade(data.student.grade ?? "");
+        setStudentCode(data.student.userCode);
         setActiveGrade(data.student.grade ?? "");
         setDashboardError("");
       })
@@ -164,7 +166,6 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
   const chooseNav = (label: string) => {
     setActiveNav(label);
     setMobileMenu(false);
-    if (label === "Study circles") setShowRoom(true);
   };
 
   async function startExam(exam: UpcomingExam) {
@@ -229,11 +230,6 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
 
         <div className="nav-label nav-label-spaced">YOUR SPACE</div>
         <nav className="main-nav" aria-label="Personal navigation">
-          <button className="nav-link" onClick={() => setShowRoom(true)}>
-            <MessageCircle size={18} strokeWidth={1.9} />
-            <span>Messages</span>
-            <span className="message-dot" />
-          </button>
           <button className="nav-link" onClick={() => setShowProfile(true)}>
             <Settings2 size={18} strokeWidth={1.9} />
             <span>My profile</span>
@@ -309,6 +305,7 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
           {activeNav === "Overview" && <>
           <section className="welcome-row">
             <div>
+              <Brand className="welcome-brand" />
               <div className="date-line"><span className="date-spark"><Sparkles size={13} /></span> {displayDate}</div>
               <h1>Habari za leo, {firstName} <span className="wave">✳</span></h1>
               <p className="welcome-subtitle">A little progress each day adds up to <strong>big results.</strong></p>
@@ -401,10 +398,10 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
               </section>
 
               <section className="study-card">
-                <div className="study-card-top"><span className="live-pill"><span /> COMING SOON</span><span className="room-count"><UsersRound size={14} /> Study circles</span></div>
+                <div className="study-card-top"><span className="live-pill"><span /> LEARN TOGETHER</span><span className="room-count"><UsersRound size={14} /> Study group</span></div>
                 <h3>Revise together</h3>
-                <p>Group chat and supervised voice/video rooms are planned for a later release.</p>
-                <button className="join-button" onClick={() => setShowRoom(true)}><Video size={15} /> Learn about study rooms <ArrowRight size={15} /></button>
+                <p>Find learners by full name or student code, add them to your group, and invite them to connect.</p>
+                <button className="join-button" onClick={() => setShowStudyGroup(true)}><UsersRound size={15} /> Find study partners <ArrowRight size={15} /></button>
               </section>
             </aside>
           </section>
@@ -421,12 +418,12 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
         </div>
       </main>
 
-      {showProfile && <ProfileModal name={studentName} grade={studentGrade} userCode={user.userCode} onClose={() => setShowProfile(false)} onCopyCode={async (code) => {
+      {showProfile && <ProfileModal name={studentName} grade={studentGrade} userCode={studentCode} onClose={() => setShowProfile(false)} onCopyCode={async (code) => {
         try {
-          await navigator.clipboard.writeText(code);
+          await copyTextToClipboard(code);
           notify("Your student code was copied.");
-        } catch {
-          notify("Copy is unavailable in this browser. Select and copy your student code.");
+        } catch (error) {
+          notify(error instanceof Error ? error.message : "Your student code could not be copied.");
         }
       }} onSave={async (name, grade) => {
         try {
@@ -441,7 +438,7 @@ function StudentDashboard({ user, onLogout }: { user: User; onLogout: () => void
           notify(error instanceof Error ? error.message : "Profile could not be updated.");
         }
       }} />}
-      {showRoom && <StudyModal onClose={() => setShowRoom(false)} />}
+      {showStudyGroup && <StudyGroupModal studentName={studentName} studentCode={studentCode} onClose={() => setShowStudyGroup(false)} onNotify={notify} />}
       {activeExam && <ExamModal attempt={activeExam} onClose={() => setActiveExam(null)} onSubmitted={() => { setActiveExam(null); void refreshDashboard(); notify("Your answers were submitted."); }} onError={(message) => notify(message)} />}
       {activeCourse && <CourseLessonsModal course={activeCourse} onClose={() => setActiveCourse(null)} onCompleted={() => void refreshDashboard()} />}
       {toast && <div className="toast"><span className="toast-check"><Check size={14} /></span>{toast}</div>}
@@ -459,55 +456,133 @@ function ProfileModal({ name, grade, userCode, onClose, onCopyCode, onSave }: { 
         <div className="modal-head"><div><span className="section-kicker">YOUR ACCOUNT</span><h2 id="profile-title">My profile</h2></div><button className="icon-button" onClick={onClose} aria-label="Close profile"><X size={19} /></button></div>
         <div className="profile-edit-avatar"><span className="avatar avatar-student avatar-large">{initials(editedName || name)}</span><span><strong>{editedName || name}</strong><small>{editedGrade} learner</small></span></div>
         <div className="student-code-card"><span><small>YOUR STUDENT CODE</small><strong>{userCode ?? "Code unavailable"}</strong></span>{userCode && <button className="copy-button" onClick={() => void onCopyCode(userCode)} aria-label="Copy your student code"><Copy size={16} /></button>}</div>
-        <label className="form-label">Display name<input value={editedName} onChange={(event) => setEditedName(event.target.value)} maxLength={60} /></label>
+        <label className="form-label">Full name<input value={editedName} onChange={(event) => setEditedName(event.target.value)} maxLength={80} autoComplete="name" /></label>
         <label className="form-label">Learning level<select value={editedGrade} onChange={(event) => setEditedGrade(event.target.value)}>{Array.from({ length: 12 }, (_, index) => <option key={index + 1}>Grade {index + 1}</option>)}</select></label>
-        <div className="privacy-hint"><span><Settings2 size={15} /></span>Share your student code only with learners you want to find you for a study discussion. Your email stays private.</div>
+        <div className="privacy-hint"><span><Settings2 size={15} /></span>Your student code identifies your learner account. Keep it safe and share it only when needed.</div>
         <div className="modal-actions"><button className="quiet-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!editedName.trim()} onClick={() => void onSave(editedName.trim(), editedGrade)}>Save changes</button></div>
       </section>
     </div>
   );
 }
 
-function StudyModal({ onClose }: { onClose: () => void }) {
-  const [studentCode, setStudentCode] = useState("");
-  const [foundStudent, setFoundStudent] = useState<{ userCode: string; name: string; grade: string } | null>(null);
+async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.append(input);
+    input.select();
+    const copied = document.execCommand("copy");
+    input.remove();
+    if (!copied) throw new Error("Copy is unavailable in this browser.");
+  }
+}
+
+type StudyStudent = { id: string; userCode: string; name: string; grade: string | null };
+
+function StudyGroupModal({ studentName, studentCode, onClose, onNotify }: { studentName: string; studentCode: string | null; onClose: () => void; onNotify: (message: string) => void }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [results, setResults] = useState<StudyStudent[]>([]);
+  const [group, setGroup] = useState<StudyStudent[]>([]);
   const [lookupError, setLookupError] = useState("");
   const [searching, setSearching] = useState(false);
+  const [addingId, setAddingId] = useState("");
+  const [groupLoading, setGroupLoading] = useState(true);
+  const [groupError, setGroupError] = useState("");
 
-  async function findStudent(event: React.FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    apiRequest<{ group: StudyStudent[] }>("/api/study-group")
+      .then((result) => setGroup(result.group))
+      .catch((error: unknown) => setGroupError(error instanceof Error ? error.message : "Your study group could not be loaded."))
+      .finally(() => setGroupLoading(false));
+  }, []);
+
+  async function searchStudents(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSearching(true);
     setLookupError("");
-    setFoundStudent(null);
+    setResults([]);
     try {
-      const result = await apiRequest<{ student: { userCode: string; name: string; grade: string } | null }>(
-        `/api/students/lookup?code=${encodeURIComponent(studentCode.trim())}`,
+      const result = await apiRequest<{ students: StudyStudent[] }>(
+        `/api/students/lookup?q=${encodeURIComponent(searchQuery.trim())}`,
       );
-      if (result.student) setFoundStudent(result.student);
-      else setLookupError("No active learner was found with that code. Check the code and try again.");
+      setResults(result.students);
+      if (result.students.length === 0) setLookupError("No active learner was found. Check the name or student code and try again.");
     } catch (error) {
-      setLookupError(error instanceof Error ? error.message : "The student code could not be checked.");
+      setLookupError(error instanceof Error ? error.message : "Learners could not be searched.");
     } finally {
       setSearching(false);
     }
   }
 
+  async function addToGroup(student: StudyStudent) {
+    setAddingId(student.id);
+    setGroupError("");
+    try {
+      const result = await apiRequest<{ student: StudyStudent }>("/api/study-group", {
+        method: "POST",
+        body: JSON.stringify({ userCode: student.userCode }),
+      });
+      setGroup((current) => current.some((member) => member.id === result.student.id) ? current : [result.student, ...current]);
+      onNotify(`${student.name} was added to your study group.`);
+    } catch (error) {
+      setGroupError(error instanceof Error ? error.message : "This learner could not be added to your group.");
+    } finally {
+      setAddingId("");
+    }
+  }
+
+  async function inviteMember(member: StudyStudent) {
+    const appUrl = new URL(import.meta.env.BASE_URL, window.location.origin).toString();
+    const message = `Hi ${member.name}, ${studentName} would like to study together on Vortex Learning. Find ${studentName} using student code ${studentCode ?? "shown in their profile"}: ${appUrl}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "Vortex Learning study group", text: message });
+        onNotify(`Invitation for ${member.name} is ready to share.`);
+        return;
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
+    try {
+      await copyTextToClipboard(message);
+      onNotify("Study invitation copied. Share it with your learner.");
+    } catch (error) {
+      onNotify(error instanceof Error ? error.message : "The invitation could not be shared.");
+    }
+  }
+
   return (
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="modal-card study-modal" role="dialog" aria-modal="true" aria-labelledby="study-title">
-        <div className="modal-head"><div><span className="section-kicker">FIND LEARNERS</span><h2 id="study-title">Study circles</h2></div><button className="icon-button" onClick={onClose} aria-label="Close study circles"><X size={19} /></button></div>
+      <section className="modal-card study-modal" role="dialog" aria-modal="true" aria-labelledby="study-group-title">
+        <div className="modal-head"><div><span className="section-kicker">FIND LEARNERS</span><h2 id="study-group-title">Study group</h2></div><button className="icon-button" onClick={onClose} aria-label="Close study group"><X size={19} /></button></div>
         <div className="student-lookup">
-          <h3>Find a learner by student code</h3>
-          <p>Ask them to share their code, then search to confirm who you want to study with.</p>
-          <form className="student-lookup-form" onSubmit={(event) => void findStudent(event)}>
-            <label className="form-label">Student code<input value={studentCode} onChange={(event) => setStudentCode(event.target.value.toUpperCase())} minLength={11} maxLength={11} placeholder="VX-XXXXXXXX" required /></label>
-            <button className="primary-button" type="submit" disabled={searching}>{searching ? "Searching…" : "Find learner"}</button>
+          <h3>Search for a learner</h3>
+          <p>Search by their full name or student code. Their email address stays private.</p>
+          <form className="student-lookup-form" onSubmit={(event) => void searchStudents(event)}>
+            <label className="form-label">Full name or student code<input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} minLength={2} maxLength={80} placeholder="e.g. VX-XXXXXXXX or learner name" required /></label>
+            <button className="primary-button" type="submit" disabled={searching || searchQuery.trim().length < 2}>{searching ? "Searching…" : "Search"}</button>
           </form>
           {lookupError && <div className="auth-error" role="alert">{lookupError}</div>}
-          {foundStudent && <div className="found-student"><span className="avatar avatar-student">{initials(foundStudent.name)}</span><span><strong>{foundStudent.name}</strong><small>{foundStudent.grade} · {foundStudent.userCode}</small></span></div>}
+          {results.map((student) => {
+            const alreadyAdded = group.some((member) => member.id === student.id);
+            return <div className="found-student" key={student.id}><span className="avatar avatar-student">{initials(student.name)}</span><span><strong>{student.name}</strong><small>{student.grade ?? "Grade not set"} · {student.userCode}</small></span><button className="primary-button" disabled={alreadyAdded || addingId === student.id} onClick={() => void addToGroup(student)}>{alreadyAdded ? "In your group" : addingId === student.id ? "Adding…" : "Add to group"}</button></div>;
+          })}
         </div>
-        <div className="room-preview"><div className="room-preview-icon"><Headphones size={25} /></div><span className="room-online">PLANNED FEATURE</span><strong>Study together, safely</strong><p>Study circles, chat, and live voice/video rooms are not connected yet. Safeguarding, room access, and moderation will be added before calls are launched.</p></div>
-        <div className="safety-note"><CircleHelp size={17} /><span>Looking up a code does not start or share a discussion. Group chat and study rooms are not live yet; no email addresses are shown.</span></div>
+        <div className="study-group">
+          <div className="study-group-heading"><div><span className="section-kicker">YOUR LEARNING GROUP</span><h3>Added learners <span>{group.length}</span></h3></div><UsersRound size={19} /></div>
+          {groupError && <div className="auth-error" role="alert">{groupError}</div>}
+          {groupLoading ? <div className="notice-empty">Loading your study group…</div>
+            : group.length ? group.map((member) => <div className="found-student group-student" key={member.id}><span className="avatar avatar-student">{initials(member.name)}</span><span><strong>{member.name}</strong><small>{member.grade ?? "Grade not set"} · {member.userCode}</small></span><button className="quiet-button" onClick={() => void inviteMember(member)}><UsersRound size={14} /> Invite</button></div>)
+              : <div className="notice-empty">Your group is empty. Search for a learner above and add them here.</div>}
+        </div>
+        <div className="privacy-hint"><span><CircleHelp size={15} /></span>Adding a learner saves them to your group. Invite creates a message for you to share; it does not send an in-app notification or start a meeting.</div>
         <div className="modal-actions"><button className="quiet-button" onClick={onClose}>Close</button></div>
       </section>
     </div>

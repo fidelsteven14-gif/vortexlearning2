@@ -110,6 +110,7 @@ button { cursor: pointer; }
 
 .page-content { margin: 0 auto; max-width: 1430px; padding: 35px 40px 23px; }
 .welcome-row { align-items: end; display: flex; justify-content: space-between; margin-bottom: 25px; }
+.welcome-brand { margin: 0 0 12px; }
 .date-line { align-items: center; color: #64748B; display: flex; font-size: 9px; font-weight: 700; gap: 7px; letter-spacing: 1.12px; }
 .date-spark { align-items: center; background: #E2E8F0; border-radius: 5px; color: #1E293B; display: inline-flex; height: 21px; justify-content: center; width: 21px; }
 h1, h2, h3, p { margin-top: 0; }
@@ -240,12 +241,6 @@ h1, h2, h3, p { margin-top: 0; }
 .live-pill { align-items: center; background: #fff; border-radius: 20px; color: #1E293B; display: flex; font-size: 7px; font-weight: 700; gap: 5px; letter-spacing: .7px; padding: 6px 8px; }
 .live-pill span { background: #16A34A; border-radius: 50%; height: 6px; width: 6px; }
 .room-count { align-items: center; color: #1E293B; display: flex; font-size: 9px; gap: 5px; }
-.study-avatars { display: flex; margin-top: 14px; padding-left: 2px; }
-.friend { align-items: center; border: 2px solid #F8FAFC; border-radius: 50%; display: flex; font: 700 9px "Segoe UI", sans-serif; height: 27px; justify-content: center; margin-left: -3px; width: 27px; }
-.friend-one { background: #FFFBEB; color: #F59E0B; }
-.friend-two { background: #F0FDF4; color: #16A34A; }
-.friend-three { background: #FFFBEB; color: #F59E0B; }
-.friend-four { background: #E2E8F0; color: #1E293B; }
 .study-card h3 { color: #1E293B; font: 700 12px "Segoe UI", sans-serif; margin: 11px 0 4px; position: relative; z-index: 1; }
 .study-card > p { color: #1E293B; font-size: 9px; margin: 0 0 12px; position: relative; z-index: 1; }
 .join-button { align-items: center; background: #0F766E; border: 0; border-radius: 7px; box-shadow: 0 5px 10px #0F766E24; color: #fff; display: flex; font-size: 9px; font-weight: 700; gap: 7px; height: 32px; justify-content: center; position: relative; transition: .18s; width: 100%; z-index: 1; }
@@ -273,7 +268,7 @@ h1, h2, h3, p { margin-top: 0; }
 .form-label { color: #1E293B; display: grid; font-size: 10px; font-weight: 600; gap: 7px; margin: 13px 0; }
 .form-label input, .form-label select { background: #fff; border: 1px solid #E2E8F0; border-radius: 8px; color: #1E293B; font-size: 11px; height: 39px; outline: 0; padding: 0 11px; }
 .form-label input:focus, .form-label select:focus { border-color: #1E293B; }
-.privacy-hint, .safety-note { align-items: flex-start; background: #F8FAFC; border-radius: 8px; color: #1E293B; display: flex; font-size: 9px; gap: 8px; line-height: 1.5; margin-top: 17px; padding: 10px; }
+.privacy-hint { align-items: flex-start; background: #F8FAFC; border-radius: 8px; color: #1E293B; display: flex; font-size: 9px; gap: 8px; line-height: 1.5; margin-top: 17px; padding: 10px; }
 .privacy-hint > span { color: #1E293B; display: flex; }
 .modal-actions { border-top: 1px solid #F8FAFC; display: flex; gap: 9px; justify-content: flex-end; margin-top: 21px; padding-top: 16px; }
 .quiet-button, .primary-button { align-items: center; border-radius: 7px; display: inline-flex; font-size: 10px; font-weight: 700; gap: 7px; height: 35px; justify-content: center; padding: 0 13px; }
@@ -284,26 +279,24 @@ h1, h2, h3, p { margin-top: 0; }
 .primary-button { background: #0F766E; border: 1px solid #0F766E; color: #fff; }
 .primary-button:hover { background: #0F766E; }
 .primary-button:disabled { cursor: not-allowed; opacity: .55; }
-.room-preview { align-items: center; background: linear-gradient(145deg, #E2E8F0, #F8FAFC); border: 1px solid #E2E8F0; border-radius: 12px; display: flex; flex-direction: column; padding: 22px 16px 20px; text-align: center; }
-.room-preview-icon { align-items: center; background: #fff; border-radius: 14px; box-shadow: 0 4px 12px #0F766E12; color: #1E293B; display: flex; height: 52px; justify-content: center; margin-bottom: 12px; width: 52px; }
-.room-online { align-items: center; color: #16A34A; display: flex; font-size: 9px; gap: 6px; }
-.room-online i { background: #16A34A; border-radius: 50%; height: 6px; width: 6px; }
-.room-preview strong { color: #1E293B; font: 700 14px "Segoe UI", sans-serif; margin-top: 10px; }
-.room-preview p { color: #1E293B; font-size: 10px; margin: 6px 0 0; }
 .study-modal { max-height: 90vh; max-width: 540px; overflow-y: auto; }
 .student-lookup { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; margin-bottom: 12px; padding: 14px; }
 .student-lookup h3 { color: #1E293B; font: 700 12px "Segoe UI", sans-serif; margin: 0 0 5px; }
 .student-lookup > p { color: #64748B; font-size: 9px; line-height: 1.5; margin: 0 0 10px; }
 .student-lookup-form { align-items: end; display: flex; gap: 9px; }
 .student-lookup-form .form-label { flex: 1; margin: 0; }
-.student-lookup-form .form-label input { width: 100%; text-transform: uppercase; }
+.student-lookup-form .form-label input { width: 100%; }
 .student-lookup-form .primary-button { flex: 0 0 auto; }
 .found-student { align-items: center; background: #fff; border: 1px solid #E2E8F0; border-radius: 8px; display: flex; gap: 9px; margin-top: 11px; padding: 9px; }
-.found-student > span:last-child { display: grid; gap: 4px; }
+.found-student > span:last-of-type { display: grid; flex: 1; gap: 4px; min-width: 0; }
 .found-student strong { color: #1E293B; font-size: 10px; }
 .found-student small { color: #64748B; font-size: 9px; }
-.safety-note { background: #F8FAFC; color: #F59E0B; margin-top: 12px; }
-.safety-note svg { color: #F59E0B; flex: 0 0 auto; }
+.found-student > button { flex: 0 0 auto; font-size: 9px; height: 31px; padding: 0 9px; white-space: nowrap; }
+.study-group { background: #fff; border: 1px solid #E2E8F0; border-radius: 10px; margin-bottom: 12px; padding: 14px; }
+.study-group-heading { align-items: center; color: #64748B; display: flex; justify-content: space-between; margin-bottom: 10px; }
+.study-group-heading h3 { color: #1E293B; font: 700 13px "Segoe UI", sans-serif; margin: 5px 0 0; }
+.study-group-heading h3 span { background: #F8FAFC; border-radius: 20px; color: #0F766E; font-size: 10px; margin-left: 4px; padding: 3px 7px; }
+.group-student { margin-top: 7px; }
 .toast { align-items: center; animation: toast-in .2s ease-out; background: #0F766E; border: 1px solid #0F766E; border-radius: 9px; bottom: 22px; box-shadow: 0 10px 25px #0F766E30; color: #fff; display: flex; font-size: 11px; gap: 9px; left: 50%; max-width: calc(100vw - 32px); padding: 11px 15px; position: fixed; transform: translateX(-50%); z-index: 80; }
 .toast-check { align-items: center; background: #16A34A; border-radius: 50%; color: #fff; display: flex; height: 19px; justify-content: center; width: 19px; }
 .scrim { background: #0F766E80; border: 0; inset: 0; position: fixed; z-index: 18; }
@@ -594,8 +587,6 @@ h1, h2, h3, p { margin-top: 0; }
   .owner-stat > strong { font-size: 21px; }
   .owner-lower { grid-template-columns: 1fr; }
   .owner-panel { padding: 15px; }
-  .student-lookup-form { align-items: stretch; flex-direction: column; }
-  .student-lookup-form .primary-button { width: 100%; }
   .student-code-card strong { font-size: 12px; }
 }
 
@@ -639,8 +630,7 @@ h1, h2, h3, p { margin-top: 0; }
 .brand-name span, .nav-link:hover, .nav-link.nav-active, .help-orbit,
 .help-card button, .date-spark, .hero-eyebrow, .hero-content h2 em,
 .progress-icon, .course-teal, .track-teal, .course-foot button,
-.round-more:hover, .study-card .live-pill, .join-button,
-.primary-button, .room-preview-icon, .text-link, .panel-footer-link,
+.round-more:hover, .primary-button, .text-link, .panel-footer-link,
 .learning-page-heading .section-kicker, .learning-page-icon,
 .area-symbol, .area-action, .curriculum-note a, .owner-refresh:hover,
 .owner-panel-link, .owner-user-code, .owner-content-tag,
@@ -649,7 +639,7 @@ h1, h2, h3, p { margin-top: 0; }
 .auth-tab-active, .auth-back-link, .auth-help a {
   color: #0F766E;
 }
-.brand-mark, .join-button, .primary-button, .hero-button,
+.brand-mark, .primary-button, .hero-button,
 .auth-submit, .loading-mark { background-color: #0F766E; }
 .auth-page { background: #FFFFFF; }
 .auth-art-copy h1, .auth-form-wrap h2, .owner-title-row h1,
@@ -663,7 +653,7 @@ h1, h2, h3, p { margin-top: 0; }
 .auth-input-wrap:focus-within { box-shadow: 0 0 0 3px #E6F4F1; }
 .auth-action-button, .auth-back-link, .auth-help a { color: #0F766E; }
 .auth-action-button:hover:not(:disabled) { background: #E6F4F1; color: #115E59; }
-.auth-submit:hover:not(:disabled), .hero-button:hover, .join-button:hover,
+.auth-submit:hover:not(:disabled), .hero-button:hover,
 .primary-button:hover { background-color: #115E59; }
 .auth-error { background: #FEF2F2; border-color: #FECACA; color: #DC2626; }
 .auth-notice { background: #F0FDF4; border-color: #BBF7D0; color: #166534; }
@@ -838,4 +828,79 @@ h1, h2, h3, p { margin-top: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
+.school-portal { min-height: 100vh; background: #f4f7f8; color: #102a33; padding: 26px clamp(16px, 4vw, 56px); }
+.school-portal-header { align-items: center; background: #fff; border: 1px solid #e4ebed; border-radius: 18px; display: flex; gap: 24px; margin: 0 auto 24px; max-width: 1440px; padding: 18px 22px; }
+.school-portal-header > div { flex: 1; }
+.school-portal-header h1 { font-size: 22px; margin: 0; text-transform: capitalize; }
+.school-portal-header p { color: #6b7d83; font-size: 13px; margin: 5px 0 0; text-transform: capitalize; }
+.school-portal-grid { display: grid; gap: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 auto; max-width: 1440px; }
+.school-portal-card { background: #fff; border: 1px solid #e4ebed; border-radius: 16px; min-width: 0; padding: 22px; }
+.school-portal-card h2 { font-size: 17px; margin: 0 0 14px; }
+.school-portal-card-heading { align-items: center; display: flex; gap: 12px; margin-bottom: 16px; }
+.school-portal-card-heading > svg { color: #0f766e; flex: 0 0 auto; }
+.school-portal-card-heading > div { flex: 1; }
+.school-portal-card-heading h2 { margin: 0; }
+.school-portal-card-heading p { color: #6b7d83; font-size: 12px; margin: 4px 0 0; }
+.school-portal-form { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.school-portal-form.compact { grid-template-columns: 1fr; }
+.school-portal-form label { color: #39535a; display: grid; font-size: 12px; font-weight: 650; gap: 6px; }
+.school-portal-form input, .school-portal-form select { background: #fbfcfc; border: 1px solid #dce6e8; border-radius: 9px; color: #102a33; font: inherit; min-height: 40px; padding: 9px 11px; width: 100%; }
+.school-portal-form fieldset { border: 1px solid #dce6e8; border-radius: 10px; display: flex; flex-wrap: wrap; gap: 8px 16px; grid-column: 1 / -1; padding: 10px; }
+.school-portal-form legend { color: #39535a; font-size: 12px; font-weight: 650; padding: 0 4px; }
+.school-portal-form .school-checkbox { align-items: center; display: flex; font-size: 12px; font-weight: 500; gap: 6px; }
+.school-checkbox input { min-height: 0; width: auto; }
+.school-assignment-row { align-items: end; display: grid; gap: 10px; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+.school-portal-form > button { align-self: end; grid-column: 1 / -1; justify-content: center; min-height: 42px; }
+.school-stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 auto 18px; max-width: 1440px; }
+.school-stat-grid > div { background: #fff; border: 1px solid #e4ebed; border-radius: 14px; display: grid; gap: 5px; padding: 17px 20px; }
+.school-stat-grid strong { color: #0f766e; font-size: 24px; }
+.school-stat-grid span, .school-counts, .school-list-row > span { color: #6b7d83; font-size: 12px; }
+.school-list-row { align-items: center; border-top: 1px solid #edf1f2; display: flex; gap: 12px; justify-content: space-between; padding: 12px 0; }
+.school-list-row:first-of-type { border-top: 0; }
+.school-list-row > div:first-child { display: grid; gap: 4px; }
+.school-list-row strong { font-size: 13px; }
+.school-list-row small { color: #6b7d83; font-size: 11px; }
+.school-counts { display: flex; flex-wrap: wrap; gap: 5px 12px; justify-content: flex-end; }
+.school-empty { color: #72848a; font-size: 13px; padding: 12px 0; }
+.school-portal-footer { color: #77878c; font-size: 12px; margin: 26px auto 0; max-width: 1440px; text-align: center; }
+.school-portal-footer a { color: #0f766e; }
+.school-student-confirm { background: #fff; border: 1px solid #e4ebed; border-radius: 14px; display: grid; gap: 14px; margin-top: 18px; padding: 18px; }
+.school-student-confirm > div { border-bottom: 1px solid #edf1f2; display: grid; gap: 4px; padding-bottom: 10px; }
+.school-student-confirm > div span { color: #6b7d83; font-size: 11px; }
+.school-student-confirm > div strong { font-size: 14px; }
+.school-student-confirm > label { align-items: center; display: flex; font-size: 13px; gap: 8px; }
+.school-student-confirm .primary-button { justify-content: center; }
+.school-auth-alternatives { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin: 16px 0; }
+.school-auth-alternatives button { background: none; border: 0; color: #0f766e; cursor: pointer; font-size: 12px; font-weight: 700; padding: 6px; }
+.teacher-activation-code { align-items: flex-start; background: #effaf4; border: 1px solid #b7e2c6; border-radius: 12px; color: #176437; display: flex; gap: 12px; margin: 0 auto 18px; max-width: 1440px; padding: 14px 18px; }
+.teacher-activation-code span { display: grid; gap: 4px; }
+.teacher-activation-code code { font-size: 18px; font-weight: 800; letter-spacing: .12em; }
+.teacher-activation-code small { font-size: 12px; }
+.student-school-summary { background: #fff; border: 1px solid #e4ebed; border-radius: 16px; display: flex; gap: 24px; margin: 0 auto 18px; max-width: 1440px; padding: 20px; }
+.student-school-summary > div { display: grid; gap: 5px; }
+.student-school-summary > div span { color: #708187; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.student-school-summary > div strong { font-size: 15px; }
+.student-result-notices { margin: 0 auto 18px; max-width: 1440px; }
+.student-result-notices p { background: #fff1f1; border: 1px solid #f1b5b5; border-radius: 10px; color: #c21e1e; font-size: 13px; font-weight: 800; margin: 8px 0; padding: 13px 16px; }
+@media (max-width: 800px) {
+  .school-portal-header { align-items: flex-start; flex-wrap: wrap; }
+  .school-portal-header > button { margin-left: auto; }
+  .school-portal-grid { grid-template-columns: 1fr; }
+  .school-portal-form { grid-template-columns: 1fr; }
+  .school-assignment-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 540px) {
+  .school-portal { padding: 12px; }
+  .school-portal-header { gap: 12px; padding: 14px; }
+  .school-portal-header h1 { font-size: 17px; }
+  .school-portal-card { padding: 16px; }
+  .school-stat-grid { gap: 8px; }
+  .school-stat-grid > div { padding: 12px; }
+  .school-stat-grid strong { font-size: 20px; }
+  .school-stat-grid span { font-size: 10px; }
+  .school-list-row { align-items: flex-start; flex-direction: column; }
+  .school-counts { justify-content: flex-start; }
+  .student-school-summary { flex-direction: column; gap: 14px; }
 }

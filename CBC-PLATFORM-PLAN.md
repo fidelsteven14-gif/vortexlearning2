@@ -1,16 +1,17 @@
 # CBC Learning Platform: Product Plan and Architecture
 
-**Status:** Planning plus a working local student dashboard and backend MVP.
-Production hosting, scaled database, safeguarding integrations, and live calls
-have not been built.
-**Purpose:** Define a practical first release and a path to grow it safely.
+**Status:** School-based platform redesign in progress. The existing learner
+MVP and Supabase deployment are being adapted; requirements below are the
+target and are not a claim that every school workflow is implemented.
+**Purpose:** Define the school operating model and delivery path.
 
 ## 1. Product vision
 
-Create a mobile-friendly learning platform for students following Kenya's CBC
-curriculum. Learners can find learning materials, practise and sit examinations,
-follow their progress, and revise together. Authorized administrators manage
-learning content and assessments and oversee the service.
+Create a mobile-friendly CBC platform organized around participating schools.
+The Super Admin onboards schools; school administrators manage school setup,
+staff, students, results, reports, and timetables; teachers work only with
+assigned classes and subjects; students access school-issued learning and
+result information.
 
 The platform should work well on commonly used phones and slower or unstable
 internet connections. It should protect student information and make it clear
@@ -20,16 +21,24 @@ which users can see each kind of information.
 
 | Role | Main responsibilities |
 | --- | --- |
-| Student | Study, take assessments, view personal results, manage profile, and join permitted study groups |
-| Owner/platform administrator | Manage users and platform settings; view aggregate activity, exam progress, and service health |
+| Super Admin | Onboard schools with official examination code, location, and logo; onboard the principal and initial school administrator; monitor platform progress |
+| School Administrator | Manage school classes, streams, subjects, grading, teachers, student rosters, result periods, school analysis, report forms, and timetables |
+| Class Coordinator | Review results for an assigned grade across its streams; prepare grade analysis for the School Administrator |
+| Teacher | Access assigned classes and subjects; enter results; upload homework and assignments; send class announcements |
+| Class Teacher | Teacher responsibilities plus onboarding and supervision of an assigned class |
+| Student | View school learning content, assignments, timetables, announcements, and personal released reports or notices; cannot edit or delete school-managed records |
 
 Use permissions rather than relying on hidden buttons: every protected action
 must also be checked by the server.
-Only students and authorized administrators receive platform accounts. School
-staff may support learners outside the platform, but do not receive teacher
-accounts or dashboards.
+Each role is authorized on the server, not just hidden in the interface.
+Schools and staff must be onboarded before their accounts can be activated.
 
-## 2. Student registration flow
+## 2. Legacy learner registration flow (superseded)
+
+**This section describes the previous MVP and is not the target onboarding
+flow.** Replace these requirements with the school roster and verification
+process in section 15 below. Do not keep public username/code registration,
+Google registration, or student self-editable school details in the new release.
 
 Because many learners are children and may not have their own email address or
 phone, do not make a student's personal email or phone the only way to register
@@ -498,3 +507,42 @@ The project does not yet provide guardian consent verification, exam-paper and
 marking-scheme PDF workflows, offline exams, live chat/calls, or a production
 deployment and monitoring setup. Do not use sample accounts or content for
 real learners.
+
+## 15. Approved school-based version
+
+This section supersedes incompatible MVP registration and administration
+requirements above. The intended sign-in identifiers are school name plus
+assessment number for students, and school name plus the registered phone
+number for teachers. Students activate with the guardian phone recorded by
+their Class Teacher, confirm the roster details, set an email and password,
+and verify that email. A School Administrator hands teachers a single-use
+activation code. Administrators sign in with their verified email.
+
+The Super Admin records the school name, official examination code, location,
+logo, principal/head teacher, and School Administrator. The Super Admin
+monitors platform progress and does not manage learning content or exams.
+School Administrators manage classes/streams, subject catalog and grading,
+teacher assignments, rosters, results windows, school analysis, report release,
+and timetables. Class Coordinators review and submit grade-wide results.
+Teachers see only their assigned classes and subjects; Class Teachers can
+onboard students. Students cannot edit or delete school-managed records.
+
+Results entry is opened for a grade and term half with a deadline. Subject
+teachers enter marks or award Y with a recorded reason; unentered results
+become X after the deadline. Coordinators submit grade results to the School
+Administrator. The School Administrator creates and releases student report
+forms. A student with X or Y in any subject receives no PDF and instead gets
+the uppercase red explanatory notice. Eligible reports include all three
+terms, mid-term and end-term results, subject changes, a performance graph,
+stream/grade position, remarks and signature areas, and school/Vortex
+branding. Reports are unavailable after one month. Students and teachers can
+download the current timetable for one week after publication.
+
+The new school portal and Supabase schema/API are an initial implementation
+foundation only. Principal account onboarding, class-teacher signature capture,
+announcements, homework/assignment delivery, complete grading configuration,
+full class-coordinator analysis, and scheduled timetable/report-file cleanup
+still need implementation and verification. The local SQLite development API
+has not yet been migrated to this school model. Do not claim a complete
+production migration or deploy until these gaps and the existing-account
+transition have been reviewed.

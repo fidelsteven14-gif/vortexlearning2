@@ -777,18 +777,6 @@ app.post("/api/curriculum/registration", authRequired, roleRequired("student"), 
   res.json({ message: "Your grade-specific subject registration has been saved." });
 });
 
-app.get("/api/students/lookup", authRequired, roleRequired("student"), rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: true, legacyHeaders: false }), (req, res) => {
-  const parsed = z.string().trim().toUpperCase().regex(/^VX-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/).safeParse(req.query.code);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Enter a valid student code." });
-    return;
-  }
-  const student = db.prepare(
-    "SELECT user_code AS userCode, name, grade FROM users WHERE user_code = ? AND role = 'student' AND active = 1",
-  ).get(parsed.data) as { userCode: string; name: string; grade: string } | undefined;
-  res.json({ student: student ?? null });
-});
-
 app.get("/api/resources/:id/file", authRequired, roleRequired("student"), async (req: AuthRequest, res, next) => {
   try {
     const resource = db.prepare(`

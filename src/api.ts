@@ -1,10 +1,14 @@
 export type User = {
   id: string;
   name: string;
-  username: string;
+  username: string | null;
   userCode: string | null;
-  role: "student" | "admin";
+  role: "student" | "teacher" | "class_coordinator" | "school_admin" | "super_admin" | "admin";
   grade: string | null;
+  schoolId?: string | null;
+  classId?: string | null;
+  assessmentNumber?: string | null;
+  stream?: string | null;
 };
 
 export type Course = {
