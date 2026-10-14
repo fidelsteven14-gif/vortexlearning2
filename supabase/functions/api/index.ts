@@ -68,8 +68,8 @@ const forgotPasswordSchema = z.object({
 });
 
 const resetPasswordSchema = z.object({
-  token: z.string().min(20).max(2000),
-  refreshToken: z.string().min(20).max(1000),
+  token: z.string().min(20).max(8192),
+  refreshToken: z.string().min(20).max(8192),
   password: passwordSchema,
   passwordConfirmation: passwordSchema,
 }).refine((input) => input.password === input.passwordConfirmation, {
