@@ -37,15 +37,17 @@ function PasswordInput({
 function recoveryTokens() {
   const query = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const recoveryError = hash.get("error_code") ?? query.get("error_code") ?? hash.get("error") ?? query.get("error");
   return {
     token: query.get("token") ?? query.get("resetToken") ?? query.get("access_token") ?? hash.get("access_token") ?? "",
     refreshToken: query.get("refresh_token") ?? hash.get("refresh_token") ?? "",
+    error: recoveryError ? "This password reset link could not be validated. It may have expired or already been used. Request a new link below." : "",
   };
 }
 
 export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
   const recovery = recoveryTokens();
-  const [mode, setMode] = useState<Mode>(recovery.token ? "reset" : "login");
+  const [mode, setMode] = useState<Mode>(recovery.token ? "reset" : recovery.error ? "forgot" : "login");
   const [loginRole, setLoginRole] = useState<LoginRole>("student");
   const [schoolName, setSchoolName] = useState("");
   const [identifier, setIdentifier] = useState("");
@@ -59,7 +61,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
   const [studentConfirmed, setStudentConfirmed] = useState(false);
   const [activation, setActivation] = useState<ActivationIdentity | null>(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(recovery.error);
   const [busy, setBusy] = useState(false);
 
   function changeMode(next: Mode) {

@@ -57,9 +57,13 @@ function App() {
     || searchParams.has("token")
     || searchParams.has("resetToken")
     || searchParams.has("access_token")
+    || searchParams.has("error")
+    || searchParams.has("error_code")
     || searchParams.get("type") === "recovery"
     || hashParams.get("type") === "recovery"
-    || hashParams.has("access_token");
+    || hashParams.has("access_token")
+    || hashParams.has("error")
+    || hashParams.has("error_code");
 
   useEffect(() => {
     if (resetRoute) {
