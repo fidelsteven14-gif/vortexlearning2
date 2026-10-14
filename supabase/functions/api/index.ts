@@ -3,6 +3,7 @@ import bcrypt from "npm:bcryptjs@2.4.3";
 import { PDFDocument, rgb } from "npm:pdf-lib@1.17.1";
 import { z } from "npm:zod@3.24.1";
 import { gradeNumber, seniorCompulsorySubjects, seniorPathways } from "../_shared/curriculum.ts";
+import { kenyaCounties } from "../_shared/kenya-counties.ts";
 
 type Role = "student" | "teacher" | "class_coordinator" | "school_admin" | "super_admin" | "admin";
 type Profile = {
@@ -69,6 +70,16 @@ const forgotPasswordSchema = z.object({
 
 const resetPasswordSchema = z.object({
   token: z.string().min(20).max(8192),
+  refreshToken: z.string().min(20).max(8192),
+  password: passwordSchema,
+  passwordConfirmation: passwordSchema,
+}).refine((input) => input.password === input.passwordConfirmation, {
+  message: "Passwords do not match.",
+  path: ["passwordConfirmation"],
+});
+const schoolAdminInvitationCodeSchema = z.object({
+  email: emailSchema,
+  code: z.string().trim().regex(/^\d{6}$/),
   password: passwordSchema,
   passwordConfirmation: passwordSchema,
 }).refine((input) => input.password === input.passwordConfirmation, {
@@ -142,16 +153,38 @@ const phoneSchema = z.string().trim().min(7).max(24).transform((value) => {
   const digits = value.replace(/\D/g, "");
   return digits.length === 10 && digits.startsWith("0") ? `254${digits.slice(1)}` : digits;
 }).refine((value) => /^\d{9,15}$/.test(value), "Enter a valid phone number.");
+const kenyanPhoneSchema = z.string().trim().min(7).max(24).transform((value) => {
+  const digits = value.replace(/\D/g, "");
+  const local = digits.startsWith("254") ? digits.slice(3) : digits.startsWith("0") ? digits.slice(1) : "";
+  return local ? `254${local}` : digits;
+}).refine((value) => /^254(?:[17]\d{8}|[2-5]\d{7,8})$/.test(value), "Enter a valid Kenyan telephone number.");
+const schoolCategorySchema = z.enum(["Primary", "Junior", "Senior", "Combined"]);
+const schoolOwnershipSchema = z.enum(["Public", "Private"]);
 const schoolInputSchema = z.object({
   name: schoolNameSchema,
   examinationCode: z.string().trim().min(2).max(40),
+  category: schoolCategorySchema,
+  ownership: schoolOwnershipSchema,
+  county: z.string().refine((value) => (kenyaCounties as readonly string[]).includes(value), "Choose one of Kenya's 47 counties."),
+  subCounty: z.string().trim().min(2).max(120),
   location: z.string().trim().min(2).max(200),
+  telephone: kenyanPhoneSchema,
   email: emailSchema.optional().or(z.literal("")),
   poBox: z.string().trim().max(80).optional(),
-  principalName: z.string().trim().max(160).optional(),
-  principalEmail: emailSchema.optional().or(z.literal("")),
+  website: z.string().trim().url().max(255).optional().or(z.literal("")),
+  grades: z.array(gradeSchema).min(1).max(12).refine((grades) => new Set(grades).size === grades.length, "Remove duplicate grades."),
   administratorName: z.string().trim().min(2).max(160),
-  administratorPhone: phoneSchema,
+  administratorEmail: emailSchema,
+  administratorPhone: kenyanPhoneSchema,
+  administratorDesignation: z.string().trim().min(2).max(100).default("School Administrator"),
+}).strict();
+const schoolVerificationStatusSchema = z.enum(["pending", "verified", "rejected"]);
+const schoolOperationalStatusSchema = z.enum(["active", "suspended", "archived"]);
+const schoolStatusInputSchema = z.object({
+  verificationStatus: schoolVerificationStatusSchema.optional(),
+  operationalStatus: schoolOperationalStatusSchema.optional(),
+}).refine((input) => input.verificationStatus !== undefined || input.operationalStatus !== undefined, {
+  message: "Choose a school status to update.",
 });
 const schoolClassInputSchema = z.object({
   grade: gradeSchema,
@@ -371,6 +404,131 @@ async function recordAdminAction(
   if (error) throw new Error(error.message);
 }
 
+function schoolAdminInviteRedirect(request: Request): string {
+  const origin = request.headers.get("origin");
+  if (!origin || !allowedOrigins.has(origin)) {
+    return "https://fidelsteven14-gif.github.io/vortexlearning2/";
+  }
+  return origin === "https://fidelsteven14-gif.github.io"
+    ? `${origin}/vortexlearning2/`
+    : `${origin}/`;
+}
+
+async function schoolLogoUrl(storageKey: string | null): Promise<string | null> {
+  if (!storageKey) return null;
+  const { data, error } = await service.storage.from("school-documents").createSignedUrl(storageKey, 3600);
+  if (error) throw new Error(error.message);
+  return data.signedUrl;
+}
+
+async function offeredGradesForSchool(schoolId: string): Promise<string[]> {
+  const { data, error } = await service.from("schools").select("grades").eq("id", schoolId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("The school linked to this account could not be found.");
+  return (data.grades as string[] | null) ?? [];
+}
+
+async function sendSchoolAdminInvitation(
+  request: Request,
+  administrator: {
+    id: string;
+    schoolId: string;
+    name: string;
+    email: string;
+    phone: string;
+    designation: string;
+    profileId: string | null;
+    invitationStatus: string;
+  },
+): Promise<{ sent: boolean; message: string }> {
+  const markFailed = async () => {
+    const { error } = await service.from("teacher_records").update({ invitation_status: "failed" }).eq("id", administrator.id);
+    if (error) throw new Error(error.message);
+  };
+
+  if (administrator.invitationStatus === "accepted") {
+    return { sent: false, message: "This School Administrator account is already active." };
+  }
+
+  if (administrator.profileId) {
+    const { data: existingProfile, error: profileError } = await service.from("profiles")
+      .select("id,active,email").eq("id", administrator.profileId).maybeSingle();
+    if (profileError) throw new Error(profileError.message);
+    if (!existingProfile || existingProfile.email !== administrator.email) {
+      return { sent: false, message: "The administrator invitation could not be safely matched to its account. Contact support." };
+    }
+    if (existingProfile.active) return { sent: false, message: "This School Administrator account is already active." };
+    const { error } = await service.auth.resend({
+      type: "signup",
+      email: administrator.email,
+      options: { emailRedirectTo: schoolAdminInviteRedirect(request) },
+    });
+    if (error) {
+      console.error("School Administrator invitation resend failed:", error.name);
+      await markFailed();
+      return { sent: false, message: "The invitation email could not be resent. Check Supabase email delivery settings and retry." };
+    }
+    const { error: statusError } = await service.from("teacher_records")
+      .update({ invitation_status: "sent" }).eq("id", administrator.id);
+    if (statusError) throw new Error(statusError.message);
+    return {
+      sent: true,
+      message: "A new activation email has been sent. Follow its secure link, or enter its six-digit code under Complete a School Administrator invitation.",
+    };
+  }
+
+  const { data, error } = await service.auth.admin.inviteUserByEmail(administrator.email, {
+    data: { name: administrator.name },
+    redirectTo: schoolAdminInviteRedirect(request),
+  });
+  if (error || !data.user) {
+    if (error) console.error("School Administrator invitation failed:", error.name);
+    await markFailed();
+    return {
+      sent: false,
+      message: "The school was saved, but the administrator invitation was not sent. Check the email address and Supabase email delivery settings, then retry.",
+    };
+  }
+
+  const { data: profile, error: profileError } = await service.from("profiles").update({
+    name: administrator.name,
+    username: null,
+    email: administrator.email,
+    email_verified: false,
+    user_code: null,
+    role: "school_admin",
+    school_id: administrator.schoolId,
+    phone_number: administrator.phone,
+    active: false,
+  }).eq("id", data.user.id).select("id").maybeSingle();
+  if (profileError || !profile) {
+    console.error("School Administrator profile setup failed:", profileError?.code ?? "profile-missing");
+    const { error: deleteError } = await service.auth.admin.deleteUser(data.user.id);
+    if (deleteError) console.error("Unlinked School Administrator cleanup failed:", deleteError.name);
+    await markFailed();
+    return {
+      sent: false,
+      message: "The school was saved, but the administrator account could not be linked. Contact support before retrying.",
+    };
+  }
+
+  const { data: linked, error: linkError } = await service.from("teacher_records").update({
+    profile_id: data.user.id,
+    invitation_status: "sent",
+  }).eq("id", administrator.id).is("profile_id", null).select("id").maybeSingle();
+  if (linkError || !linked) {
+    console.error("School Administrator account link failed:", linkError?.code ?? "record-already-linked");
+    const { error: deleteError } = await service.auth.admin.deleteUser(data.user.id);
+    if (deleteError) console.error("Unlinked School Administrator cleanup failed:", deleteError.name);
+    await markFailed();
+    return {
+      sent: false,
+      message: "The school was saved, but the administrator account could not be linked. Contact support before retrying.",
+    };
+  }
+  return { sent: true, message: "An account activation invitation has been sent to the School Administrator." };
+}
+
 function randomId(): string {
   return crypto.randomUUID();
 }
@@ -423,16 +581,101 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     return json({ message: "If an active account uses that email, a reset link will be sent. Check your inbox and spam folder; if it does not arrive, try again later or contact support." }, 202);
   }
 
+  if (request.method === "POST" && path === "/api/auth/accept-school-invitation") {
+    if (!await limited(10, 900)) return fail("Too many invitation attempts. Please wait and try again.", 429);
+    const parsed = resetPasswordSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const client = authClient();
+    const { data, error } = await client.auth.setSession({
+      access_token: parsed.data.token,
+      refresh_token: parsed.data.refreshToken,
+    });
+    if (error || !data.user?.email) return fail("This invitation is invalid or has expired. Ask your School Administrator to resend it.", 400);
+
+    const { data: profile, error: profileError } = await service.from("profiles")
+      .select("id,email,role,active,school_id")
+      .eq("id", data.user.id).maybeSingle();
+    if (profileError) throw new Error(profileError.message);
+    if (!profile || profile.role !== "school_admin" || profile.active || profile.email !== data.user.email.toLowerCase()) {
+      return fail("This invitation is not valid for this School Administrator account.", 403);
+    }
+    if (!data.user.email_confirmed_at) {
+      return fail("Confirm your email using the invitation link before choosing a password.", 400);
+    }
+    const { data: administrator, error: administratorError } = await service.from("teacher_records")
+      .select("id,school_id").eq("profile_id", data.user.id).eq("account_role", "school_admin").maybeSingle();
+    if (administratorError) throw new Error(administratorError.message);
+    if (!administrator || administrator.school_id !== profile.school_id) {
+      return fail("This invitation is not linked to a school administrator record.", 403);
+    }
+
+    const { error: passwordError } = await client.auth.updateUser({ password: parsed.data.password });
+    if (passwordError) return fail("Your password could not be set. Ask the School Administrator to resend the invitation.", 400);
+    const { data: activated, error: activateError } = await service.from("profiles").update({
+      active: true,
+      email_verified: true,
+    }).eq("id", data.user.id).eq("role", "school_admin").eq("active", false).select("id").maybeSingle();
+    if (activateError) throw new Error(activateError.message);
+    if (!activated) return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
+    const { error: invitationUpdateError } = await service.from("teacher_records")
+      .update({ invitation_status: "accepted" }).eq("id", administrator.id);
+    if (invitationUpdateError) throw new Error(invitationUpdateError.message);
+    return json({ message: "Your email is confirmed and your School Administrator account is ready. You can now sign in." });
+  }
+
+  if (request.method === "POST" && path === "/api/auth/accept-school-invitation-code") {
+    if (!await limited(8, 900)) return fail("Too many invitation attempts. Please wait and try again.", 429);
+    const parsed = schoolAdminInvitationCodeSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const { data, error } = await authClient().auth.verifyOtp({
+      email: parsed.data.email,
+      token: parsed.data.code,
+      type: "signup",
+    });
+    if (error || !data.user?.email || !data.session) return fail("That verification code is invalid or expired. Ask the Super Admin to resend your invitation.", 400);
+    const { data: profile, error: profileError } = await service.from("profiles")
+      .select("id,email,role,active,school_id").eq("id", data.user.id).maybeSingle();
+    if (profileError) throw new Error(profileError.message);
+    if (!profile || profile.role !== "school_admin" || profile.active || profile.email !== parsed.data.email) {
+      return fail("This invitation is not valid for a pending School Administrator account.", 403);
+    }
+    const { data: administrator, error: administratorError } = await service.from("teacher_records")
+      .select("id,school_id").eq("profile_id", data.user.id).eq("account_role", "school_admin").maybeSingle();
+    if (administratorError) throw new Error(administratorError.message);
+    if (!administrator || administrator.school_id !== profile.school_id) {
+      return fail("This invitation is not linked to a school administrator record.", 403);
+    }
+    const client = authClient();
+    const { error: sessionError } = await client.auth.setSession({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
+    });
+    if (sessionError) return fail("Your email was confirmed but the account could not be activated. Ask the Super Admin to resend your invitation.", 400);
+    const { error: passwordError } = await client.auth.updateUser({ password: parsed.data.password });
+    if (passwordError) return fail("Your password could not be set. Ask the Super Admin to resend your invitation.", 400);
+    const { data: activated, error: activateError } = await service.from("profiles").update({
+      active: true,
+      email_verified: true,
+    }).eq("id", data.user.id).eq("role", "school_admin").eq("active", false).select("id").maybeSingle();
+    if (activateError) throw new Error(activateError.message);
+    if (!activated) return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
+    const { error: invitationUpdateError } = await service.from("teacher_records")
+      .update({ invitation_status: "accepted" }).eq("id", administrator.id);
+    if (invitationUpdateError) throw new Error(invitationUpdateError.message);
+    return json({ message: "Your email is confirmed and your School Administrator account is ready. You can now sign in." });
+  }
+
   if (request.method === "POST" && path === "/api/auth/reset-password") {
     if (!await limited(10, 900)) return fail("Too many password reset attempts. Please wait and try again.", 429);
     const parsed = resetPasswordSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     const client = authClient();
-    const { data, error } = await client.auth.getUser(parsed.data.token);
-    if (error || !data.user) return fail("This reset link is invalid or has expired. Request a new one.", 400);
-    const { error: updateError } = await service.auth.admin.updateUserById(data.user.id, {
-      password: parsed.data.password,
+    const { data, error } = await client.auth.setSession({
+      access_token: parsed.data.token,
+      refresh_token: parsed.data.refreshToken,
     });
+    if (error || !data.user) return fail("This reset link is invalid or has expired. Request a new one.", 400);
+    const { error: updateError } = await client.auth.updateUser({ password: parsed.data.password });
     if (updateError) return fail("The password could not be reset. Please request a new recovery email.", 400);
     return json({ message: "Your password has been reset. You can now sign in with your new password." });
   }
@@ -732,6 +975,13 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
   const profile = auth.profile;
   const isSuperAdmin = profile.role === "super_admin" || profile.role === "admin";
 
+  if (path.startsWith("/api/school/") && profile.school_id) {
+    const { data: school, error } = await service.from("schools").select("active")
+      .eq("id", profile.school_id).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!school?.active) return fail("This school is suspended or archived. Contact the platform administrator.", 403);
+  }
+
   const activeWindowIds = async (schoolId: string, grade?: string) => {
     const query = service.from("result_windows").select("id,grade,term,half,deadline,status")
       .eq("school_id", schoolId).in("status", ["scheduled", "open", "closed", "coordinator_review", "admin_review", "released"]);
@@ -833,9 +1083,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       if (error) throw new Error(error.message);
       return { id: timetable.id, grade: timetable.grade, filename: timetable.original_filename, expiresAt: timetable.expires_at, downloadUrl: data.signedUrl };
     }));
+    const school = schoolResult.data as Record<string, unknown> & { logo_storage_key: string | null };
     return json({
       student: { name: profile.name, assessmentNumber: profile.assessment_number, grade: classResult.data.grade, stream: classResult.data.stream },
-      school: schoolResult.data,
+      school: { ...school, logoUrl: await schoolLogoUrl(school.logo_storage_key) },
       subjects: roster.student_roster_subjects.flatMap(({ school_subjects }) => school_subjects),
       notices: noticesResult.data,
       reports,
@@ -846,6 +1097,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
   const schoolAssetRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/assets\/(logo|principal-signature)$/);
   if (schoolAssetRoute && request.method === "PUT") {
     if (!isSuperAdmin) return fail("You do not have permission to update school branding.", 403);
+    if (!await rateAllowed(request, path, 12, 900)) return fail("Too many school image uploads. Please wait and try again.", 429);
     const schoolId = decodeURIComponent(schoolAssetRoute[1]);
     const assetName = schoolAssetRoute[2] === "logo" ? "logo_storage_key" : "principal_signature_storage_key";
     const form = await request.formData();
@@ -853,13 +1105,25 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (!(file instanceof File) || file.size < 8 || file.size > 2 * 1024 * 1024) {
       return fail("Choose a school image no larger than 2 MB.", 413);
     }
-    const extension = file.type === "image/png" ? "png" : file.type === "image/jpeg" ? "jpg" : "";
-    if (!extension) return fail("School logos and signatures must be PNG or JPEG images.", 415);
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const isPng = bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte);
-    const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-    if ((extension === "png" && !isPng) || (extension === "jpg" && !isJpeg)) {
-      return fail("The selected file does not match its declared image type.", 415);
+    const isPng = bytes.length >= 45
+      && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)
+      && String.fromCharCode(...bytes.slice(12, 16)) === "IHDR"
+      && bytes.slice(-8, -4).every((byte, index) => byte === [73, 69, 78, 68][index]);
+    const isJpeg = bytes.length >= 4
+      && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+    const isWebp = bytes.length >= 20
+      && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF"
+      && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+      && ["VP8 ", "VP8L", "VP8X"].includes(String.fromCharCode(...bytes.slice(12, 16)))
+      && new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4, true) + 8 === bytes.length;
+    const extension = isPng ? "png" : isJpeg ? "jpg" : isWebp ? "webp" : "";
+    const contentType = extension === "png" ? "image/png" : extension === "jpg" ? "image/jpeg" : extension === "webp" ? "image/webp" : "";
+    if (!extension || contentType !== file.type || (schoolAssetRoute[2] === "principal-signature" && isWebp)) {
+      return fail(schoolAssetRoute[2] === "logo"
+        ? "Upload a valid JPEG, PNG, or WebP image no larger than 2 MB."
+        : "Upload a valid PNG or JPEG signature image no larger than 2 MB.", 415);
     }
     const { data: current, error: currentError } = await service.from("schools")
       .select("logo_storage_key,principal_signature_storage_key").eq("id", schoolId).maybeSingle();
@@ -868,7 +1132,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     const oldKey = (current as Record<string, string | null>)[assetName];
     const storageKey = `${schoolId}/branding/${schoolAssetRoute[2]}-${randomId()}.${extension}`;
     const { error: uploadError } = await service.storage.from("school-documents").upload(storageKey, bytes, {
-      contentType: file.type, upsert: false,
+      contentType, upsert: false,
     });
     if (uploadError) throw new Error(uploadError.message);
     const { data: updated, error: updateError } = await service.from("schools")
@@ -890,21 +1154,85 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     return json({ updated: true });
   }
 
+  const schoolStatusRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/status$/);
+  if (schoolStatusRoute && request.method === "PATCH") {
+    if (!isSuperAdmin) return fail("You do not have permission to change school status.", 403);
+    const parsed = schoolStatusInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const schoolId = decodeURIComponent(schoolStatusRoute[1]);
+    const { data: current, error: currentError } = await service.from("schools")
+      .select("verification_status,operational_status").eq("id", schoolId).maybeSingle();
+    if (currentError) throw new Error(currentError.message);
+    if (!current) return fail("This school was not found.", 404);
+    const verificationStatus = parsed.data.verificationStatus ?? current.verification_status;
+    const operationalStatus = parsed.data.operationalStatus ?? current.operational_status;
+    const now = new Date().toISOString();
+    const { data: updated, error: updateError } = await service.from("schools").update({
+      verification_status: verificationStatus,
+      operational_status: operationalStatus,
+      active: operationalStatus === "active",
+      status_updated_by: profile.id,
+      status_updated_at: now,
+      updated_at: now,
+    }).eq("id", schoolId).select("id").maybeSingle();
+    if (updateError) throw new Error(updateError.message);
+    if (!updated) return fail("This school was not found.", 404);
+    await recordAdminAction(profile.id, "school_status_updated", "school", schoolId, {
+      verificationStatus,
+      operationalStatus,
+    });
+    return json({ verificationStatus, operationalStatus });
+  }
+
+  const invitationRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/administrator-invitation$/);
+  if (invitationRoute && request.method === "POST") {
+    if (!isSuperAdmin) return fail("You do not have permission to manage School Administrator invitations.", 403);
+    if (!await rateAllowed(request, path, 5, 3600)) return fail("Too many invitation requests. Please wait and try again.", 429);
+    const schoolId = decodeURIComponent(invitationRoute[1]);
+    const { data: row, error } = await service.from("teacher_records")
+      .select("id,school_id,full_name,administrator_email,phone_number,designation,profile_id,invitation_status")
+      .eq("school_id", schoolId).eq("account_role", "school_admin").maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!row || !row.administrator_email) return fail("This school has no School Administrator invitation to retry.", 404);
+    const administrator = row as {
+      id: string; school_id: string; full_name: string; administrator_email: string; phone_number: string;
+      designation: string | null; profile_id: string | null; invitation_status: string;
+    };
+    const result = await sendSchoolAdminInvitation(request, {
+      id: administrator.id,
+      schoolId: administrator.school_id,
+      name: administrator.full_name,
+      email: administrator.administrator_email,
+      phone: administrator.phone_number,
+      designation: administrator.designation || "School Administrator",
+      profileId: administrator.profile_id,
+      invitationStatus: administrator.invitation_status,
+    });
+    if (result.sent) {
+      await recordAdminAction(profile.id, "school_admin_invitation_resent", "school", schoolId, { email: administrator.administrator_email });
+    }
+    return json({ invitationStatus: result.sent ? "sent" : "failed", message: result.message }, result.sent ? 200 : 202);
+  }
+
   if (path === "/api/super-admin/schools" && request.method === "GET") {
     if (!isSuperAdmin) return fail("You do not have permission to view platform schools.", 403);
     const { data, error } = await service.from("schools")
-      .select("id,name,examination_code,location,logo_storage_key,email,po_box,principal_name,active,created_at")
+      .select("id,name,examination_code,category,ownership,county,sub_county,location,telephone,logo_storage_key,email,po_box,website,grades,verification_status,operational_status,active,created_at")
       .order("name");
     if (error) throw new Error(error.message);
     const schools = data as Array<Record<string, unknown> & { id: string }>;
-    const [classResult, studentResult, teacherResult] = await Promise.all([
+    const [classResult, studentResult, teacherResult, administratorResult] = await Promise.all([
       schools.length ? service.from("school_classes").select("school_id") : Promise.resolve({ data: [], error: null }),
       schools.length ? service.from("student_rosters").select("school_id") : Promise.resolve({ data: [], error: null }),
       schools.length ? service.from("teacher_records").select("school_id") : Promise.resolve({ data: [], error: null }),
+      schools.length ? service.from("teacher_records")
+        .select("id,school_id,full_name,administrator_email,profile_id,invitation_status")
+        .eq("account_role", "school_admin") : Promise.resolve({ data: [], error: null }),
     ]);
     if (classResult.error) throw new Error(classResult.error.message);
     if (studentResult.error) throw new Error(studentResult.error.message);
     if (teacherResult.error) throw new Error(teacherResult.error.message);
+    if (administratorResult.error) throw new Error(administratorResult.error.message);
     const countBySchool = (rows: Array<{ school_id: string }>) => {
       const counts = new Map<string, number>();
       rows.forEach(({ school_id }) => counts.set(school_id, (counts.get(school_id) ?? 0) + 1));
@@ -913,11 +1241,38 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     const classes = countBySchool(classResult.data as Array<{ school_id: string }>);
     const students = countBySchool(studentResult.data as Array<{ school_id: string }>);
     const teachers = countBySchool(teacherResult.data as Array<{ school_id: string }>);
-    return json({ schools: schools.map((school) => ({
-      ...school,
-      classCount: classes.get(school.id) ?? 0,
-      studentCount: students.get(school.id) ?? 0,
-      teacherCount: teachers.get(school.id) ?? 0,
+    const administrators = new Map((administratorResult.data as Array<{
+      id: string; school_id: string; full_name: string; administrator_email: string | null;
+      profile_id: string | null; invitation_status: string;
+    }>).map((row) => [row.school_id, row]));
+    const profilesById = new Map<string, { active: boolean; email_verified: boolean }>();
+    const profileIds = [...administrators.values()].flatMap((row) => row.profile_id ? [row.profile_id] : []);
+    if (profileIds.length) {
+      const { data: profileRows, error: profileError } = await service.from("profiles")
+        .select("id,active,email_verified").in("id", profileIds);
+      if (profileError) throw new Error(profileError.message);
+      (profileRows as Array<{ id: string; active: boolean; email_verified: boolean }>).forEach((row) => {
+        profilesById.set(row.id, { active: row.active, email_verified: row.email_verified });
+      });
+    }
+    return json({ schools: await Promise.all(schools.map(async (school) => {
+      const administrator = administrators.get(school.id);
+      const linkedProfile = administrator?.profile_id ? profilesById.get(administrator.profile_id) : undefined;
+      const invitationStatus = linkedProfile?.active && linkedProfile.email_verified
+        ? "accepted"
+        : administrator?.invitation_status ?? "not_invited";
+      return {
+        ...school,
+        logoUrl: await schoolLogoUrl(school.logo_storage_key as string | null),
+        administrator: administrator ? {
+          name: administrator.full_name,
+          email: administrator.administrator_email,
+          invitationStatus,
+        } : null,
+        classCount: classes.get(school.id) ?? 0,
+        studentCount: students.get(school.id) ?? 0,
+        teacherCount: teachers.get(school.id) ?? 0,
+      };
     })) });
   }
 
@@ -926,48 +1281,61 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     const parsed = schoolInputSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     const input = parsed.data;
-    const schoolId = randomId();
-    const { data, error } = await service.from("schools").insert({
-      id: schoolId,
-      name: input.name,
-      examination_code: input.examinationCode.trim().toUpperCase(),
-      location: input.location,
-      email: input.email || null,
-      po_box: input.poBox || null,
-      principal_name: input.principalName || null,
-      principal_email: input.principalEmail || null,
-      created_by: profile.id,
-    }).select("id,name,examination_code,location").single();
-    if (error?.code === "23505") return fail("A school with that name or examination code is already registered.", 409);
-    if (error) throw new Error(error.message);
-    const { data: administrator, error: administratorError } = await service.from("teacher_records").insert({
-      school_id: schoolId,
-      account_role: "school_admin",
-      full_name: input.administratorName,
-      phone_number: input.administratorPhone,
-      phone_normalized: input.administratorPhone,
-      created_by: profile.id,
-    }).select("id").single();
-    if (administratorError) {
-      const { error: cleanupError } = await service.from("schools").delete().eq("id", schoolId);
-      if (cleanupError) console.error("School cleanup after administrator creation failure failed:", cleanupError.message);
-      if (administratorError.code === "23505") return fail("That administrator phone number is already registered for this school.", 409);
-      throw new Error(administratorError.message);
-    }
-    const activationCode = createTeacherActivationCode();
-    const { error: codeError } = await service.from("teacher_activation_codes").insert({
-      teacher_id: administrator.id,
-      code_hash: await digestHex(activationCode),
-      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString(),
-      created_by: profile.id,
+    const { data: existingProfile, error: profileLookupError } = await service.from("profiles")
+      .select("id").eq("email", input.administratorEmail).maybeSingle();
+    if (profileLookupError) throw new Error(profileLookupError.message);
+    if (existingProfile) return fail("That email address already belongs to an account. Use a different administrator email or assign the existing account through a reviewed workflow.", 409);
+    const { data: existingAdministrator, error: administratorLookupError } = await service.from("teacher_records")
+      .select("id").eq("administrator_email", input.administratorEmail).maybeSingle();
+    if (administratorLookupError) throw new Error(administratorLookupError.message);
+    if (existingAdministrator) return fail("That email address already has a School Administrator invitation.", 409);
+
+    const { data: createdRows, error } = await service.rpc("create_school_onboarding_records", {
+      p_name: input.name,
+      p_examination_code: input.examinationCode,
+      p_category: input.category,
+      p_ownership: input.ownership,
+      p_county: input.county,
+      p_sub_county: input.subCounty,
+      p_location: input.location,
+      p_telephone: input.telephone,
+      p_email: input.email || "",
+      p_po_box: input.poBox || "",
+      p_website: input.website || "",
+      p_grades: input.grades,
+      p_created_by: profile.id,
+      p_administrator_name: input.administratorName,
+      p_administrator_email: input.administratorEmail,
+      p_administrator_phone: input.administratorPhone,
+      p_administrator_designation: input.administratorDesignation,
     });
-    if (codeError) {
-      const { error: cleanupError } = await service.from("schools").delete().eq("id", schoolId);
-      if (cleanupError) console.error("School cleanup after activation code failure failed:", cleanupError.message);
-      throw new Error(codeError.message);
-    }
-    await recordAdminAction(profile.id, "school_created", "school", schoolId, { name: input.name });
-    return json({ school: data, administratorActivationCode: activationCode }, 201);
+    if (error?.code === "23505") return fail("A school with that name, registration number, or administrator email is already registered.", 409);
+    if (error) throw new Error(error.message);
+    const created = (createdRows as Array<{ school_id: string; administrator_id: string }> | null)?.[0];
+    if (!created) throw new Error("School registration completed without returning the created school and administrator records.");
+    const invitation = await sendSchoolAdminInvitation(request, {
+      id: created.administrator_id,
+      schoolId: created.school_id,
+      name: input.administratorName,
+      email: input.administratorEmail,
+      phone: input.administratorPhone,
+      designation: input.administratorDesignation,
+      profileId: null,
+      invitationStatus: "pending",
+    });
+    await recordAdminAction(profile.id, "school_created", "school", created.school_id, {
+      name: input.name,
+      administratorInvitationStatus: invitation.sent ? "sent" : "failed",
+    });
+    const { data: school, error: schoolError } = await service.from("schools")
+      .select("id,name,examination_code,verification_status,operational_status")
+      .eq("id", created.school_id).single();
+    if (schoolError) throw new Error(schoolError.message);
+    return json({
+      school,
+      administratorInvitationStatus: invitation.sent ? "sent" : "failed",
+      administratorInvitationMessage: invitation.message,
+    }, 201);
   }
 
   if (path === "/api/school/overview" && request.method === "GET") {
@@ -975,7 +1343,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       return fail("You do not have permission to view this school dashboard.", 403);
     }
     const [schoolResult, classResult, studentResult, teacherResult] = await Promise.all([
-      service.from("schools").select("id,name,examination_code,location,logo_storage_key,email,po_box,principal_name")
+      service.from("schools").select("id,name,examination_code,category,ownership,county,sub_county,location,telephone,logo_storage_key,email,po_box,website,grades")
         .eq("id", profile.school_id).single(),
       service.from("school_classes").select("id,grade,stream,class_teacher_id,coordinator_id")
         .eq("school_id", profile.school_id).order("grade").order("stream"),
@@ -1003,8 +1371,9 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     const visibleClassIds = new Set(visibleClasses.map(({ id }) => id));
     const students = (studentResult.data as Array<{ id: string; class_id: string }>)
       .filter((row) => visibleClassIds.has(row.class_id));
+    const school = schoolResult.data as Record<string, unknown> & { logo_storage_key: string | null };
     return json({
-      school: schoolResult.data,
+      school: { ...school, logoUrl: await schoolLogoUrl(school.logo_storage_key) },
       counts: {
         classes: visibleClasses.length,
         students: students.length,
@@ -1046,6 +1415,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (profile.role !== "school_admin") return fail("Only the School Administrator can create classes.", 403);
     const parsed = schoolClassInputSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
+    const offeredGrades = await offeredGradesForSchool(profile.school_id!);
+    if (offeredGrades.length && !offeredGrades.includes(parsed.data.grade)) {
+      return fail("Choose a grade that this school selected as offered during registration.", 400);
+    }
     const assignmentIds = [parsed.data.classTeacherId, parsed.data.coordinatorId].filter((id): id is string => Boolean(id));
     if (assignmentIds.length) {
       const { data: assignedProfiles, error: assignmentError } = await service.from("profiles")
@@ -1512,6 +1885,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (profile.role !== "school_admin") return fail("Only the School Administrator can open results entry.", 403);
     const parsed = resultWindowInputSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
+    const offeredGrades = await offeredGradesForSchool(profile.school_id!);
+    if (offeredGrades.length && !offeredGrades.includes(parsed.data.grade)) {
+      return fail("Choose a grade that this school selected as offered during registration.", 400);
+    }
     const classesResult = await service.from("school_classes").select("id")
       .eq("school_id", profile.school_id!).eq("grade", parsed.data.grade);
     if (classesResult.error) throw new Error(classesResult.error.message);

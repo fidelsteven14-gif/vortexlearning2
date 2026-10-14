@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, BookOpen, Eye, EyeOff, GraduationCap, LockKeyhol
 import { apiRequest, setToken, supportEmail, type User } from "./api";
 import Brand from "./Brand";
 
-type Mode = "login" | "student-lookup" | "student-confirm" | "student-register" | "teacher-register" | "verify" | "forgot" | "reset";
+type Mode = "login" | "student-lookup" | "student-confirm" | "student-register" | "teacher-register" | "verify" | "forgot" | "reset" | "invite" | "invite-verify";
 type LoginRole = "student" | "teacher";
 type StudentDetails = { name: string; assessmentNumber: string; grade: string; stream: string; subjects: Array<{ id: string; name: string }> };
 type AuthResponse = { token: string; refreshToken?: string; user: User };
@@ -38,15 +38,18 @@ function recoveryTokens() {
   const query = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const recoveryError = hash.get("error_code") ?? query.get("error_code") ?? hash.get("error") ?? query.get("error");
+  const invitation = query.get("type") === "invite" || hash.get("type") === "invite";
   return {
     token: query.get("token") ?? query.get("resetToken") ?? query.get("access_token") ?? hash.get("access_token") ?? "",
+    refreshToken: query.get("refresh_token") ?? hash.get("refresh_token") ?? "",
+    invitation,
     error: recoveryError ? "This password reset link could not be validated. It may have expired or already been used. Request a new link below." : "",
   };
 }
 
 export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
   const recovery = recoveryTokens();
-  const [mode, setMode] = useState<Mode>(recovery.token ? "reset" : recovery.error ? "forgot" : "login");
+  const [mode, setMode] = useState<Mode>(recovery.token ? recovery.invitation ? "invite" : "reset" : recovery.error ? "forgot" : "login");
   const [loginRole, setLoginRole] = useState<LoginRole>("student");
   const [schoolName, setSchoolName] = useState("");
   const [identifier, setIdentifier] = useState("");
@@ -56,6 +59,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
+  const [invitationCode, setInvitationCode] = useState("");
   const [student, setStudent] = useState<StudentDetails | null>(null);
   const [studentConfirmed, setStudentConfirmed] = useState(false);
   const [activation, setActivation] = useState<ActivationIdentity | null>(null);
@@ -146,6 +150,22 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
         setNotice(response.message);
         return;
       }
+      if (mode === "invite-verify") {
+        if (password !== confirmation) {
+          setError("The passwords do not match. Check both fields and try again.");
+          return;
+        }
+        const response = await apiRequest<{ message: string }>("/api/auth/accept-school-invitation-code", {
+          method: "POST",
+          body: JSON.stringify({ email, code: invitationCode, password, passwordConfirmation: confirmation }),
+        });
+        setPassword("");
+        setConfirmation("");
+        setInvitationCode("");
+        changeMode("login");
+        setNotice(response.message);
+        return;
+      }
       if (mode === "forgot") {
         const response = await apiRequest<{ message: string }>("/api/auth/forgot-password", {
           method: "POST",
@@ -154,15 +174,16 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
         setNotice(response.message);
         return;
       }
-      if (mode === "reset") {
+      if (mode === "reset" || mode === "invite") {
         if (password !== confirmation) {
           setError("The passwords do not match. Check both fields and try again.");
           return;
         }
-        const response = await apiRequest<{ message: string }>("/api/auth/reset-password", {
+        const response = await apiRequest<{ message: string }>(mode === "invite" ? "/api/auth/accept-school-invitation" : "/api/auth/reset-password", {
           method: "POST",
           body: JSON.stringify({
             token: recovery.token,
+            refreshToken: recovery.refreshToken,
             password,
             passwordConfirmation: confirmation,
           }),
@@ -203,14 +224,17 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
         mode === "student-register" ? "Activate your student account" :
           mode === "teacher-register" ? "Activate your school staff account" :
             mode === "verify" ? "Verify your email" :
-              mode === "forgot" ? "Reset your password" : "Choose a new password";
+              mode === "forgot" ? "Reset your password" :
+                mode === "invite" || mode === "invite-verify" ? "Activate School Administrator account" : "Choose a new password";
   const intro = mode === "login" ? "Use the school and official details already recorded for your account." :
     mode === "student-lookup" ? "Enter your school, assessment number, and the guardian phone recorded by your class teacher." :
       mode === "student-confirm" ? "Check that the school roster has found the right learner before creating an account." :
         mode === "verify" ? `Enter the six-digit code sent to ${email}.` :
           mode === "teacher-register" ? "Enter the single-use activation code given to you by your School Administrator." :
             mode === "forgot" ? "Enter the email address on your account. If it is registered, a recovery link will be sent." :
-              mode === "reset" ? "Choose a new password for your account." :
+              mode === "invite" ? "Confirm your email and choose a password to activate your School Administrator account." :
+                mode === "invite-verify" ? "Enter the six-digit code from your latest School Administrator invitation email, then choose a password." :
+                mode === "reset" ? "Choose a new password for your account." :
                 "Set an email address and password for your school account.";
 
   return (
@@ -268,7 +292,11 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
             </>}
             {mode === "verify" && <label className="form-label">6-digit verification code<input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} pattern="[0-9]{6}" required /></label>}
             {mode === "forgot" && <label className="form-label">Account email<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} required /></div></label>}
-            {mode === "reset" && <>
+            {mode === "invite-verify" && <>
+              <label className="form-label">School Administrator email<div className="auth-input-wrap"><Mail size={16} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" maxLength={254} required /></div></label>
+              <label className="form-label">6-digit invitation code<input value={invitationCode} onChange={(event) => setInvitationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} pattern="[0-9]{6}" required /></label>
+            </>}
+            {(mode === "reset" || mode === "invite" || mode === "invite-verify") && <>
               <label className="form-label">New password<PasswordInput value={password} onChange={setPassword} autoComplete="new-password" minLength={6} maxLength={72} required /></label>
               <label className="form-label">Confirm password<PasswordInput value={confirmation} onChange={setConfirmation} autoComplete="new-password" minLength={6} maxLength={72} required /></label>
             </>}
@@ -276,7 +304,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
             {error && <div className="auth-error" role="alert">{error}</div>}
             {notice && <div className="auth-notice" role="status">{notice}</div>}
             <button className="auth-submit" type="submit" disabled={busy}>
-              {busy ? "Please wait…" : mode === "login" ? "Sign in" : mode === "student-lookup" ? "Find my school record" : mode === "student-register" || mode === "teacher-register" ? "Create account" : mode === "verify" ? "Verify email" : mode === "forgot" ? "Send recovery link" : "Save new password"}
+              {busy ? "Please wait…" : mode === "login" ? "Sign in" : mode === "student-lookup" ? "Find my school record" : mode === "student-register" || mode === "teacher-register" ? "Create account" : mode === "verify" ? "Verify email" : mode === "forgot" ? "Send recovery link" : mode === "invite" || mode === "invite-verify" ? "Activate School Administrator account" : "Save new password"}
               <ArrowRight size={16} />
             </button>
           </form>}
@@ -284,6 +312,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
           {mode === "login" && <div className="school-auth-alternatives">
             <button type="button" onClick={() => changeMode("student-lookup")}>Activate a student account</button>
             <button type="button" onClick={() => changeMode("teacher-register")}>Activate a teacher or staff account</button>
+            <button type="button" onClick={() => changeMode("invite-verify")}>Complete a School Administrator invitation</button>
           </div>}
           {mode === "verify" && <>
             <button className="auth-action-button auth-resend-button" type="button" onClick={() => void resendVerification()} disabled={busy}>Resend verification code</button>

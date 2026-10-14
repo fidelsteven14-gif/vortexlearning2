@@ -836,6 +836,7 @@ h1, h2, h3, p { margin-top: 0; }
 .school-portal-header h1 { font-size: 22px; margin: 0; text-transform: capitalize; }
 .school-portal-header p { color: #6b7d83; font-size: 13px; margin: 5px 0 0; text-transform: capitalize; }
 .school-portal-grid { display: grid; gap: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 auto; max-width: 1440px; }
+.school-admin-grid { align-items: start; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); }
 .school-portal-card { background: #fff; border: 1px solid #e4ebed; border-radius: 16px; min-width: 0; padding: 22px; }
 .school-portal-card h2 { font-size: 17px; margin: 0 0 14px; }
 .school-portal-card-heading { align-items: center; display: flex; gap: 12px; margin-bottom: 16px; }
@@ -853,6 +854,60 @@ h1, h2, h3, p { margin-top: 0; }
 .school-checkbox input { min-height: 0; width: auto; }
 .school-assignment-row { align-items: end; display: grid; gap: 10px; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
 .school-portal-form > button { align-self: end; grid-column: 1 / -1; justify-content: center; min-height: 42px; }
+.school-registration-form { grid-template-columns: minmax(0, 1fr); }
+.school-form-section { border-top: 1px solid #edf1f2; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 16px; }
+.school-form-section h3 { color: #102a33; font-size: 14px; grid-column: 1 / -1; margin: 0; }
+.school-form-section > label { align-content: start; }
+.school-form-section > label > span { color: #6b7d83; font-size: 10px; }
+.school-registration-form input:disabled { color: #839196; cursor: not-allowed; }
+.school-grade-picker { align-content: start; background: #fbfcfc; display: grid !important; gap: 8px !important; }
+.school-grade-picker p { color: #6b7d83; font-size: 11px; grid-column: 1 / -1; margin: 0; }
+.school-grade-picker > div { display: grid; gap: 7px 10px; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.school-review-grid { display: grid; gap: 12px; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.school-review-grid > div { min-width: 0; }
+.school-review-grid dt { color: #708187; font-size: 10px; font-weight: 700; }
+.school-review-grid dd { color: #183a43; font-size: 13px; margin: 3px 0 0; overflow-wrap: anywhere; }
+.school-onboarding-note { color: #63777e; font-size: 12px; grid-column: 1 / -1; margin: 4px 0 0; }
+.school-form-actions { display: flex; flex-wrap: wrap; gap: 10px; grid-column: 1 / -1; justify-content: flex-end; }
+.school-form-actions > button { justify-content: center; min-height: 42px; }
+.school-logo-picker { align-items: center; display: flex; gap: 16px; grid-column: 1 / -1; }
+.school-logo-preview { align-items: center; background: #f4f7f8; border: 1px dashed #bdcccf; border-radius: 12px; color: #84959a; display: flex; flex: 0 0 92px; height: 92px; justify-content: center; overflow: hidden; }
+.school-logo-preview img { height: 100%; object-fit: contain; width: 100%; }
+.school-logo-picker > div:last-child { display: grid; gap: 7px; min-width: 0; }
+.school-logo-picker strong { font-size: 12px; overflow-wrap: anywhere; }
+.school-logo-picker p { color: #6b7d83; font-size: 11px; line-height: 1.5; margin: 0; }
+.school-upload-button, .school-remove-logo { align-items: center; background: #eff8f7; border: 1px solid #cce3df; border-radius: 8px; color: #0f625e; cursor: pointer; display: inline-flex !important; font-size: 11px !important; gap: 6px !important; justify-self: start; padding: 8px 10px; width: fit-content; }
+.school-upload-button input { display: none; }
+.school-remove-logo { background: transparent; border-color: #e5c4c4; color: #a33333; }
+.school-registration-result { background: #effaf4; border: 1px solid #b7e2c6; border-radius: 11px; color: #176437; display: grid; font-size: 12px; gap: 6px; margin: 0 0 14px; overflow-wrap: anywhere; padding: 13px; }
+.school-registration-result p { margin: 0; }
+.school-registration-result code { font-size: 11px; }
+.school-result-heading { align-items: center; display: flex; gap: 8px; }
+.school-upload-recovery { border-top: 1px solid #b7e2c6; display: grid; gap: 8px; padding-top: 8px; }
+.school-directory-row { border-top: 1px solid #edf1f2; display: grid; gap: 12px; padding: 14px 0; }
+.school-directory-row:first-of-type { border-top: 0; }
+.school-directory-heading { align-items: center; display: flex; gap: 11px; min-width: 0; }
+.school-directory-heading > div:last-child { display: grid; gap: 4px; min-width: 0; }
+.school-directory-heading strong { font-size: 13px; overflow-wrap: anywhere; }
+.school-directory-heading small { color: #6b7d83; font-size: 10px; overflow-wrap: anywhere; }
+.school-directory-logo { background: #f4f7f8; border: 1px solid #e4ebed; border-radius: 10px; flex: 0 0 52px; height: 52px; object-fit: contain; padding: 4px; width: 52px; }
+.school-directory-placeholder { align-items: center; color: #89999e; display: flex; justify-content: center; }
+.school-directory-details { display: grid; gap: 9px; padding-left: 63px; }
+.school-directory-details > span { color: #5e747b; font-size: 11px; overflow-wrap: anywhere; }
+.school-directory-profile { display: grid; gap: 6px; }
+.school-directory-profile summary { color: #0f625e; cursor: pointer; font-size: 11px; font-weight: 700; }
+.school-directory-profile > span { color: #5e747b; font-size: 11px; overflow-wrap: anywhere; }
+.school-directory-selects { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.school-directory-selects label { color: #5e747b; display: grid; font-size: 10px; gap: 4px; }
+.school-directory-selects select { background: #fbfcfc; border: 1px solid #dce6e8; border-radius: 7px; color: #102a33; font: inherit; min-height: 34px; padding: 5px; width: 100%; }
+.school-logo-update { align-items: center; background: #eff8f7; border: 1px solid #cce3df; border-radius: 8px; color: #0f625e; cursor: pointer; display: inline-flex; font-size: 10px; gap: 6px; justify-self: start; padding: 7px 9px; }
+.school-logo-update input { display: none; }
+.school-brand-banner { align-items: center; background: #fff; border: 1px solid #e4ebed; border-radius: 14px; display: flex; gap: 12px; margin: 0 auto 16px; max-width: 1440px; padding: 12px 16px; }
+.school-brand-banner > img, .school-brand-banner > div { align-items: center; background: #f4f7f8; border: 1px solid #e4ebed; border-radius: 9px; color: #84959a; display: flex; flex: 0 0 46px; height: 46px; justify-content: center; object-fit: contain; padding: 3px; width: 46px; }
+.school-brand-banner > span { display: grid; gap: 4px; min-width: 0; }
+.school-brand-banner strong { font-size: 13px; }
+.school-brand-banner small { color: #6b7d83; font-size: 10px; overflow-wrap: anywhere; }
+.student-school-logo { align-self: center; background: #f4f7f8; border: 1px solid #e4ebed; border-radius: 9px; height: 48px; object-fit: contain; padding: 3px; width: 48px; }
 .school-stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 auto 18px; max-width: 1440px; }
 .school-stat-grid > div { background: #fff; border: 1px solid #e4ebed; border-radius: 14px; display: grid; gap: 5px; padding: 17px 20px; }
 .school-stat-grid strong { color: #0f766e; font-size: 24px; }
@@ -888,7 +943,10 @@ h1, h2, h3, p { margin-top: 0; }
   .school-portal-header { align-items: flex-start; flex-wrap: wrap; }
   .school-portal-header > button { margin-left: auto; }
   .school-portal-grid { grid-template-columns: 1fr; }
+  .school-admin-grid { grid-template-columns: 1fr; }
   .school-portal-form { grid-template-columns: 1fr; }
+  .school-form-section { grid-template-columns: 1fr; }
+  .school-grade-picker > div { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .school-assignment-row { grid-template-columns: 1fr; }
 }
 @media (max-width: 540px) {
@@ -903,4 +961,9 @@ h1, h2, h3, p { margin-top: 0; }
   .school-list-row { align-items: flex-start; flex-direction: column; }
   .school-counts { justify-content: flex-start; }
   .student-school-summary { flex-direction: column; gap: 14px; }
+  .school-review-grid { grid-template-columns: 1fr; }
+  .school-directory-details { padding-left: 0; }
+  .school-directory-selects { grid-template-columns: 1fr; }
+  .school-logo-picker { align-items: flex-start; flex-direction: column; }
+  .school-grade-picker > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

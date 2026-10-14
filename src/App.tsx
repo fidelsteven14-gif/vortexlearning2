@@ -60,6 +60,7 @@ function App() {
     || searchParams.has("error")
     || searchParams.has("error_code")
     || searchParams.get("type") === "recovery"
+    || searchParams.get("type") === "invite"
     || hashParams.get("type") === "recovery"
     || hashParams.has("access_token")
     || hashParams.has("error")

@@ -34,6 +34,33 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
 
 ## Verification and email behavior
 
+The Super Admin school registration workflow is backed by the additive
+`20261014130000_school_onboarding.sql` migration. It extends the existing school
+and staff records, creates a school and its initial administrator record in one
+database transaction, and leaves existing principal details and signatures
+untouched. Newly registered schools start as **Pending Verification** and
+**Active**; a Super Admin must explicitly update verification and operational
+status in the school directory. Selected grades are stored with the school and
+are used to constrain new class and results configuration.
+
+The initial School Administrator is invited through Supabase Auth. Configure
+custom SMTP and paste `templates/invite-user.html` into Authentication → Email
+Templates → **Invite user**. Make sure the GitHub Pages URL remains on the Auth
+redirect allowlist. The administrator follows the secure invitation link and
+sets their own password; the account remains inactive until that step
+completes. A failed email send does not roll back the school record; use
+**Resend invitation** in the school directory after correcting Auth email
+delivery settings.
+
+School logos are kept in the existing private `school-documents` bucket. The
+API validates image signatures and size, associates each object with its school,
+and serves short-lived signed image URLs; no public bucket or new secret is
+required. The registration form includes all 47 counties. Since this repository
+does not contain an authoritative Sub-County mapping, Sub-County is entered as
+text after selecting a county rather than populated from invented mappings.
+Existing schools retain blank/unknown category, ownership, location, and grade
+metadata rather than being assigned fabricated values.
+
 The school-based target onboarding flow is documented in `CBC-PLATFORM-PLAN.md`. The `20261014050000_school_platform.sql` migration adds school, class, roster, teacher-assignment, results, report-copy, timetable, and notice tables. It is a data-model foundation; do not treat it as a completed rollout until the API and frontend workflows are also deployed and verified.
 
 The migration seeds only the app's curriculum and sample learning material. It does not import local SQLite accounts, invitations, attempts, or other learner data.

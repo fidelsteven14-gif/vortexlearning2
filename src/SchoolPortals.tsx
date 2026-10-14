@@ -1,16 +1,53 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowRight, Download, LogOut, RefreshCw, School, ShieldCheck, Users } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { ArrowRight, Check, Download, Image, LogOut, RefreshCw, School, ShieldCheck, Upload, Users, X } from "lucide-react";
 import { apiRequest, supportEmail, type User } from "./api";
 import Brand from "./Brand";
+import { kenyaCounties } from "../supabase/functions/_shared/kenya-counties";
 
 type SchoolRecord = {
   id: string;
   name: string;
   examination_code: string;
+  category: string | null;
+  ownership: string | null;
+  county: string;
+  sub_county: string;
   location: string;
+  telephone: string;
+  email: string | null;
+  po_box: string | null;
+  website: string | null;
+  grades: string[];
+  logoUrl: string | null;
+  verification_status: "pending" | "verified" | "rejected";
+  operational_status: "active" | "suspended" | "archived";
+  administrator: { name: string; email: string | null; invitationStatus: string } | null;
   classCount: number;
   studentCount: number;
   teacherCount: number;
+};
+type SchoolForm = {
+  name: string;
+  examinationCode: string;
+  category: "Primary" | "Junior" | "Senior" | "Combined";
+  ownership: "Public" | "Private";
+  county: string;
+  subCounty: string;
+  location: string;
+  telephone: string;
+  email: string;
+  poBox: string;
+  website: string;
+  grades: string[];
+  administratorName: string;
+  administratorEmail: string;
+  administratorPhone: string;
+  administratorDesignation: string;
+};
+type RegistrationResult = {
+  school: { id: string; name: string; verification_status: string; operational_status: string };
+  administratorInvitationStatus: "sent" | "failed";
+  administratorInvitationMessage: string;
 };
 type ClassRecord = { id: string; grade: string; stream: string; class_teacher_id?: string | null; coordinator_id?: string | null; studentCount?: number };
 type SubjectRecord = { id: string; name: string; max_marks: number };
@@ -34,13 +71,16 @@ type ResultWindowDetail = {
   subjectRemarks: Array<{ class_id: string; subject_id: string; remark: string }>;
 };
 type SchoolOverview = {
-  school: { name: string; examination_code: string; location: string; email: string | null; po_box: string | null };
+  school: {
+    name: string; examination_code: string; location: string; email: string | null; po_box: string | null;
+    category: string; ownership: string; county: string; sub_county: string; grades: string[]; logoUrl: string | null;
+  };
   counts: { classes: number; students: number; teachers?: number };
   classes: ClassRecord[];
 };
 type StudentOverview = {
   student: { name: string; assessmentNumber: string | null; grade: string; stream: string };
-  school: { name: string; email: string | null; po_box: string | null };
+  school: { name: string; email: string | null; po_box: string | null; logoUrl: string | null };
   subjects: SubjectRecord[];
   notices: Array<{ id: string; message: string; created_at: string }>;
   reports: Array<{ id: string; downloadUrl: string; expiresAt: string }>;
@@ -62,85 +102,300 @@ function PortalShell({ title, subtitle, onLogout, children }: { title: string; s
   </main>;
 }
 
+function emptySchoolForm(): SchoolForm {
+  return {
+    name: "",
+    examinationCode: "",
+    category: "Combined",
+    ownership: "Public",
+    county: "",
+    subCounty: "",
+    location: "",
+    telephone: "",
+    email: "",
+    poBox: "",
+    website: "",
+    grades: [],
+    administratorName: "",
+    administratorEmail: "",
+    administratorPhone: "",
+    administratorDesignation: "School Administrator",
+  };
+}
+
 function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [schools, setSchools] = useState<SchoolRecord[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [administratorActivationCode, setAdministratorActivationCode] = useState("");
+  const [form, setForm] = useState<SchoolForm>(emptySchoolForm);
   const [schoolLogo, setSchoolLogo] = useState<File | null>(null);
-  const [principalSignature, setPrincipalSignature] = useState<File | null>(null);
-  const [form, setForm] = useState({
-    name: "", examinationCode: "", location: "", email: "", poBox: "", principalName: "",
-    principalEmail: "", administratorName: "", administratorPhone: "",
-  });
+  const [logoError, setLogoError] = useState("");
+  const [reviewing, setReviewing] = useState(false);
+  const [registration, setRegistration] = useState<RegistrationResult | null>(null);
+  const [logoUploadError, setLogoUploadError] = useState("");
+  const [updatingSchoolId, setUpdatingSchoolId] = useState("");
+  const [updatingLogoSchoolId, setUpdatingLogoSchoolId] = useState("");
+  const logoPreviewUrl = useMemo(() => schoolLogo ? URL.createObjectURL(schoolLogo) : "", [schoolLogo]);
   const refresh = useCallback(() => apiRequest<{ schools: SchoolRecord[] }>("/api/super-admin/schools")
     .then(({ schools: rows }) => { setSchools(rows); setError(""); })
     .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : "Schools could not be loaded.")), []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => () => { if (logoPreviewUrl) URL.revokeObjectURL(logoPreviewUrl); }, [logoPreviewUrl]);
 
-  async function createSchool(event: FormEvent<HTMLFormElement>) {
+  function updateForm<Key extends keyof SchoolForm>(key: Key, value: SchoolForm[Key]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function uploadSchoolLogo(schoolId: string, file: File) {
+    const data = new FormData();
+    data.set("file", file);
+    await apiRequest(`/api/super-admin/schools/${schoolId}/assets/logo`, { method: "PUT", body: data });
+  }
+
+  async function registerSchool(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy(true);
     setError("");
     setNotice("");
+    if (!reviewing) {
+      if (!form.grades.length) {
+        setError("Select at least one grade the school currently offers.");
+        return;
+      }
+      setReviewing(true);
+      return;
+    }
+    setBusy(true);
     try {
-      const created = await apiRequest<{ school: { id: string }; administratorActivationCode: string }>("/api/super-admin/schools", {
-        method: "POST", body: JSON.stringify(form),
+      const created = await apiRequest<RegistrationResult>("/api/super-admin/schools", {
+        method: "POST",
+        body: JSON.stringify(form),
       });
-      setForm({ name: "", examinationCode: "", location: "", email: "", poBox: "", principalName: "", principalEmail: "", administratorName: "", administratorPhone: "" });
-      setAdministratorActivationCode(created.administratorActivationCode);
-      const uploadIssues: string[] = [];
-      for (const [asset, file] of [["logo", schoolLogo], ["principal-signature", principalSignature]] as const) {
-        if (!file) continue;
-        const data = new FormData();
-        data.set("file", file);
+      setRegistration(created);
+      setForm(emptySchoolForm());
+      setReviewing(false);
+      setLogoUploadError("");
+      if (schoolLogo) {
         try {
-          await apiRequest(`/api/super-admin/schools/${created.school.id}/assets/${asset}`, { method: "PUT", body: data });
+          await uploadSchoolLogo(created.school.id, schoolLogo);
+          setSchoolLogo(null);
         } catch (uploadError) {
-          uploadIssues.push(uploadError instanceof Error ? uploadError.message : `${asset} upload failed.`);
+          setLogoUploadError(uploadError instanceof Error ? uploadError.message : "The school was saved, but its logo could not be uploaded.");
         }
       }
-      setSchoolLogo(null);
-      setPrincipalSignature(null);
-      setNotice(uploadIssues.length
-        ? `School registered. Give the administrator the activation code below. Branding upload needs attention: ${uploadIssues.join(" ")}`
-        : "School registered. Give the administrator the activation code below to activate their staff account.");
+      setNotice("The school record has been saved. Its verification status is pending.");
       await refresh();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "The school could not be created.");
+      setError(requestError instanceof Error ? requestError.message : "The school could not be registered.");
     } finally {
       setBusy(false);
     }
   }
 
+  async function retryLogoUpload() {
+    if (!registration || !schoolLogo) return;
+    setBusy(true);
+    setLogoUploadError("");
+    try {
+      await uploadSchoolLogo(registration.school.id, schoolLogo);
+      setSchoolLogo(null);
+      await refresh();
+    } catch (uploadError) {
+      setLogoUploadError(uploadError instanceof Error ? uploadError.message : "The school logo could not be uploaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function replaceDirectoryLogo(schoolId: string, file: File) {
+    setUpdatingLogoSchoolId(schoolId);
+    setError("");
+    try {
+      await uploadSchoolLogo(schoolId, file);
+      await refresh();
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "The school logo could not be updated.");
+    } finally {
+      setUpdatingLogoSchoolId("");
+    }
+  }
+
+  async function retryAdministratorInvitation(schoolId = registration?.school.id) {
+    if (!schoolId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>(
+        `/api/super-admin/schools/${schoolId}/administrator-invitation`,
+        { method: "POST" },
+      );
+      setRegistration((current) => current?.school.id === schoolId
+        ? { ...current, administratorInvitationStatus: result.invitationStatus, administratorInvitationMessage: result.message }
+        : current);
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The invitation could not be retried.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateSchoolStatus(school: SchoolRecord, field: "verificationStatus" | "operationalStatus", value: string) {
+    setUpdatingSchoolId(school.id);
+    setError("");
+    try {
+      await apiRequest(`/api/super-admin/schools/${school.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ [field]: value }),
+      });
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The school status could not be updated.");
+    } finally {
+      setUpdatingSchoolId("");
+    }
+  }
+
+  const grades = Array.from({ length: 12 }, (_, index) => `Grade ${index + 1}`);
+  const phonePattern = "(?:\\+?254|0)(?:[17]\\d{8}|[2-5]\\d{7,8})";
+
   return <PortalShell title="Platform administration" subtitle={`Super Admin · ${user.name}`} onLogout={onLogout}>
-    <section className="school-portal-grid">
+    <section className="school-portal-grid school-admin-grid">
       <article className="school-portal-card">
-        <div className="school-portal-card-heading"><School size={20} /><div><h2>Onboard a school</h2><p>Register the school and invite its first School Administrator.</p></div></div>
-        <form className="school-portal-form" onSubmit={(event) => void createSchool(event)}>
-          <label>School name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-          <label>Official examination code<input required value={form.examinationCode} onChange={(event) => setForm({ ...form, examinationCode: event.target.value })} /></label>
-          <label>Location<input required value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} /></label>
-          <label>School email<input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
-          <label>P.O. Box<input value={form.poBox} onChange={(event) => setForm({ ...form, poBox: event.target.value })} /></label>
-          <label>Principal / head teacher name<input value={form.principalName} onChange={(event) => setForm({ ...form, principalName: event.target.value })} /></label>
-          <label>Principal email<input type="email" value={form.principalEmail} onChange={(event) => setForm({ ...form, principalEmail: event.target.value })} /></label>
-          <label>School logo (PNG or JPEG, up to 2 MB)<input type="file" accept="image/png,image/jpeg" onChange={(event) => setSchoolLogo(event.target.files?.[0] ?? null)} /></label>
-          <label>Principal signature (PNG or JPEG, up to 2 MB)<input type="file" accept="image/png,image/jpeg" onChange={(event) => setPrincipalSignature(event.target.files?.[0] ?? null)} /></label>
-          <label>School Administrator full name<input required value={form.administratorName} onChange={(event) => setForm({ ...form, administratorName: event.target.value })} /></label>
-          <label>School Administrator phone number<input type="tel" required value={form.administratorPhone} onChange={(event) => setForm({ ...form, administratorPhone: event.target.value })} /></label>
+        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>Save official school details and invite its first School Administrator.</p></div></div>
+        {error && <p className="auth-error" role="alert">{error}</p>}
+        {registration && <div className="school-registration-result" role="status">
+          <div className="school-result-heading"><Check size={18} /><strong>{registration.school.name} is registered</strong></div>
+          <p>Internal school ID: <code>{registration.school.id}</code></p>
+          <p>Verification status: <strong>{registration.school.verification_status}</strong></p>
+          <p>Administrator invitation: <strong>{registration.administratorInvitationStatus === "sent" ? "Sent — awaiting activation" : "Not sent — retry required"}</strong></p>
+          <p>{registration.administratorInvitationMessage}</p>
+          {registration.administratorInvitationStatus !== "sent" && <button className="quiet-button" type="button" onClick={() => void retryAdministratorInvitation()} disabled={busy}>
+            <RefreshCw size={15} /> Retry administrator invitation
+          </button>}
+          {logoUploadError && <div className="school-upload-recovery"><p>{logoUploadError}</p>
+            {schoolLogo && <button className="quiet-button" type="button" onClick={() => void retryLogoUpload()} disabled={busy}><Upload size={15} /> Retry logo upload</button>}
+          </div>}
+        </div>}
+        {notice && <p className="auth-notice" role="status">{notice}</p>}
+        <form className="school-portal-form school-registration-form" onSubmit={(event) => void registerSchool(event)}>
+          <section className="school-form-section">
+            <h3>Section A: School Information</h3>
+            {!reviewing ? <>
+              <label>Official school name <span aria-hidden="true">*</span><input required minLength={2} maxLength={160} value={form.name} onChange={(event) => updateForm("name", event.target.value)} /></label>
+              <label>Registration number / official school code <span aria-hidden="true">*</span><input required minLength={2} maxLength={40} value={form.examinationCode} onChange={(event) => updateForm("examinationCode", event.target.value)} /></label>
+              <label>School category <span aria-hidden="true">*</span><select required value={form.category} onChange={(event) => updateForm("category", event.target.value as SchoolForm["category"])}>
+                <option value="Primary">Primary</option><option value="Junior">Junior</option><option value="Senior">Senior</option><option value="Combined">Combined</option>
+              </select></label>
+              <label>Ownership <span aria-hidden="true">*</span><select required value={form.ownership} onChange={(event) => updateForm("ownership", event.target.value as SchoolForm["ownership"])}>
+                <option value="Public">Public</option><option value="Private">Private</option>
+              </select></label>
+              <label>County <span aria-hidden="true">*</span><select required value={form.county} onChange={(event) => { updateForm("county", event.target.value); updateForm("subCounty", ""); }}>
+                <option value="">Choose county</option>{kenyaCounties.map((county) => <option key={county} value={county}>{county}</option>)}
+              </select></label>
+              <label>Sub-County <span aria-hidden="true">*</span><input required minLength={2} maxLength={120} value={form.subCounty} onChange={(event) => updateForm("subCounty", event.target.value)} placeholder={form.county ? `Enter the Sub-County in ${form.county}` : "Choose a county first"} disabled={!form.county} /></label>
+              <label>Physical location <span aria-hidden="true">*</span><input required minLength={2} maxLength={200} value={form.location} onChange={(event) => updateForm("location", event.target.value)} placeholder="Town, ward, or locality" /></label>
+              <label>Official school telephone <span aria-hidden="true">*</span><input type="tel" required pattern={phonePattern} title="Enter a valid Kenyan phone number, such as 0712345678 or +254712345678." value={form.telephone} onChange={(event) => updateForm("telephone", event.target.value)} /></label>
+              <label>Official school email <span className="optional-label">(optional)</span><input type="email" maxLength={254} value={form.email} onChange={(event) => updateForm("email", event.target.value)} /></label>
+              <label>Postal address <span className="optional-label">(optional)</span><input maxLength={80} value={form.poBox} onChange={(event) => updateForm("poBox", event.target.value)} /></label>
+              <label>School website <span className="optional-label">(optional)</span><input type="url" maxLength={255} value={form.website} onChange={(event) => updateForm("website", event.target.value)} placeholder="https://" /></label>
+              <fieldset className="school-grade-picker">
+                <legend>Grades offered <span aria-hidden="true">*</span></legend>
+                <p>Select only grades currently offered by this school.</p>
+                <div>{grades.map((grade) => <label className="school-checkbox" key={grade}>
+                  <input type="checkbox" checked={form.grades.includes(grade)} onChange={(event) => updateForm("grades", event.target.checked ? [...form.grades, grade] : form.grades.filter((selected) => selected !== grade))} />{grade}
+                </label>)}</div>
+              </fieldset>
+            </> : <dl className="school-review-grid">
+              <div><dt>School</dt><dd>{form.name}</dd></div><div><dt>Official registration number</dt><dd>{form.examinationCode}</dd></div>
+              <div><dt>Category and ownership</dt><dd>{form.category} · {form.ownership}</dd></div><div><dt>County / Sub-County</dt><dd>{form.county} · {form.subCounty}</dd></div>
+              <div><dt>Location and telephone</dt><dd>{form.location} · {form.telephone}</dd></div><div><dt>School email</dt><dd>{form.email || "Not provided"}</dd></div>
+              <div><dt>Postal address / website</dt><dd>{form.poBox || "—"} · {form.website || "—"}</dd></div><div><dt>Grades offered</dt><dd>{form.grades.join(", ")}</dd></div>
+            </dl>}
+          </section>
+          <section className="school-form-section">
+            <h3>Section B: School Logo</h3>
+            <div className="school-logo-picker">
+              <div className="school-logo-preview">{logoPreviewUrl ? <img src={logoPreviewUrl} alt="Selected school logo preview" /> : <Image size={32} aria-hidden="true" />}</div>
+              <div><strong>{schoolLogo ? schoolLogo.name : "No logo selected"}</strong><p>JPEG, PNG, or WebP · maximum 2 MB. The logo is stored privately and shown only through time-limited links.</p>
+                {!reviewing && <label className="school-upload-button"><Upload size={15} /> Upload School Logo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setLogoError("");
+                  if (file && !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+                    setLogoError("Choose a JPEG, PNG, or WebP image.");
+                    event.target.value = "";
+                    return;
+                  }
+                  if (file && file.size > 2 * 1024 * 1024) {
+                    setLogoError("The logo must be no larger than 2 MB.");
+                    event.target.value = "";
+                    return;
+                  }
+                  setSchoolLogo(file);
+                }} /></label>}
+                {schoolLogo && !reviewing && <button className="school-remove-logo" type="button" onClick={() => setSchoolLogo(null)}><X size={14} /> Remove logo</button>}
+              </div>
+            </div>
+            {logoError && <p className="auth-error" role="alert">{logoError}</p>}
+          </section>
+          <section className="school-form-section">
+            <h3>Section C: School Administrator Information</h3>
+            {!reviewing ? <>
+              <label>Administrator's full name <span aria-hidden="true">*</span><input required minLength={2} maxLength={160} value={form.administratorName} onChange={(event) => updateForm("administratorName", event.target.value)} /></label>
+              <label>Administrator's email <span aria-hidden="true">*</span><input type="email" required maxLength={254} value={form.administratorEmail} onChange={(event) => updateForm("administratorEmail", event.target.value)} /></label>
+              <label>Administrator's telephone <span aria-hidden="true">*</span><input type="tel" required pattern={phonePattern} title="Enter a valid Kenyan phone number, such as 0712345678 or +254712345678." value={form.administratorPhone} onChange={(event) => updateForm("administratorPhone", event.target.value)} /></label>
+              <label>Job title / designation <span aria-hidden="true">*</span><input required minLength={2} maxLength={100} value={form.administratorDesignation} onChange={(event) => updateForm("administratorDesignation", event.target.value)} /></label>
+            </> : <dl className="school-review-grid">
+              <div><dt>Administrator</dt><dd>{form.administratorName}</dd></div><div><dt>Email invitation</dt><dd>{form.administratorEmail}</dd></div>
+              <div><dt>Telephone</dt><dd>{form.administratorPhone}</dd></div><div><dt>Job title</dt><dd>{form.administratorDesignation}</dd></div>
+            </dl>}
+            <p className="school-onboarding-note">Principal, teachers, and other school personnel are onboarded later by the School Administrator.</p>
+          </section>
           {error && <p className="auth-error" role="alert">{error}</p>}
-          {notice && <p className="auth-notice" role="status">{notice}</p>}
-          <button className="primary-button" type="submit" disabled={busy}>{busy ? "Registering…" : "Register school"} <ArrowRight size={15} /></button>
+          <div className="school-form-actions">
+            {reviewing && <button className="quiet-button" type="button" onClick={() => setReviewing(false)} disabled={busy}>Edit details</button>}
+            <button className="primary-button" type="submit" disabled={busy}>{busy ? "Saving school and sending invitation…" : reviewing ? "Confirm and register school" : "Review registration"} <ArrowRight size={15} /></button>
+          </div>
         </form>
-        {administratorActivationCode && <div className="teacher-activation-code"><ShieldCheck size={18} /><span><strong>School Administrator activation code</strong><code>{administratorActivationCode}</code><small>Shown once. Give it to the administrator in person. It expires in seven days. After activation, they sign in through Teacher / Staff using this school and registered phone.</small></span></div>}
       </article>
-      <article className="school-portal-card">
-        <div className="school-portal-card-heading"><Users size={20} /><div><h2>Schools</h2><p>School-level progress overview</p></div><button className="icon-button" onClick={() => void refresh()} aria-label="Refresh schools"><RefreshCw size={16} /></button></div>
-        {schools.map((school) => <div className="school-list-row" key={school.id}>
-          <div><strong>{school.name}</strong><small>{school.examination_code} · {school.location}</small></div>
-          <div className="school-counts"><span>{school.studentCount} students</span><span>{school.teacherCount} teachers</span><span>{school.classCount} classes</span></div>
+      <article className="school-portal-card school-directory-card">
+        <div className="school-portal-card-heading"><Users size={20} /><div><h2>School directory</h2><p>School identity, verification, and account status</p></div><button className="icon-button" onClick={() => void refresh()} aria-label="Refresh schools"><RefreshCw size={16} /></button></div>
+        {schools.map((school) => <div className="school-directory-row" key={school.id}>
+          <div className="school-directory-heading">
+            {school.logoUrl ? <img className="school-directory-logo" src={school.logoUrl} alt={`${school.name} logo`} /> : <div className="school-directory-logo school-directory-placeholder"><School size={20} aria-hidden="true" /></div>}
+            <div><strong>{school.name}</strong><small>{school.examination_code} · {school.category ?? "Category not recorded"} · {school.ownership ?? "Ownership not recorded"}</small><small>{school.county}{school.sub_county ? `, ${school.sub_county}` : ""} · {school.location}</small></div>
+          </div>
+          <div className="school-directory-details">
+            <span>Grades: {school.grades?.length ? school.grades.join(", ") : "Not configured"}</span>
+            <span>Administrator: {school.administrator?.name ?? "Not assigned"} · {school.administrator?.invitationStatus === "sent" ? "Invitation sent · awaiting activation" : school.administrator?.invitationStatus ?? "not invited"}</span>
+            <details className="school-directory-profile"><summary>View school profile</summary>
+              <span>Official telephone: {school.telephone || "Not recorded"}</span>
+              <span>Official email: {school.email || "Not provided"}</span>
+              <span>Postal address: {school.po_box || "Not provided"}</span>
+              <span>Website: {school.website || "Not provided"}</span>
+              {school.administrator?.email && <span>Administrator email: {school.administrator.email}</span>}
+            </details>
+            <div className="school-directory-selects">
+              <label>Verification<select disabled={updatingSchoolId === school.id} value={school.verification_status} onChange={(event) => void updateSchoolStatus(school, "verificationStatus", event.target.value)}>
+                <option value="pending">Pending verification</option><option value="verified">Verified</option><option value="rejected">Rejected</option>
+              </select></label>
+              <label>Operations<select disabled={updatingSchoolId === school.id} value={school.operational_status} onChange={(event) => void updateSchoolStatus(school, "operationalStatus", event.target.value)}>
+                <option value="active">Active</option><option value="suspended">Suspended</option><option value="archived">Archived</option>
+              </select></label>
+            </div>
+            <label className="school-logo-update"><Upload size={14} /> {updatingLogoSchoolId === school.id ? "Updating logo…" : "Update school logo"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={updatingLogoSchoolId === school.id} onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 2 * 1024 * 1024) {
+                setError("Choose a valid JPEG, PNG, or WebP school logo no larger than 2 MB.");
+                return;
+              }
+              void replaceDirectoryLogo(school.id, file);
+            }} /></label>
+            {(school.administrator?.invitationStatus === "failed" || school.administrator?.invitationStatus === "sent") && <button className="quiet-button" type="button" disabled={busy} onClick={() => void retryAdministratorInvitation(school.id)}><RefreshCw size={14} /> Resend invitation</button>}
+            <div className="school-counts"><span>{school.studentCount} students</span><span>{school.teacherCount} staff</span><span>{school.classCount} classes</span></div>
+          </div>
         </div>)}
         {!schools.length && !error && <p className="school-empty">No schools registered yet.</p>}
       </article>
@@ -193,6 +448,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
         apiRequest<{ timetables: TimetableRecord[] }>("/api/school/timetables"),
       ]);
       setOverview(summary);
+      setGrade((current) => summary.school.grades.includes(current) ? current : summary.school.grades[0] ?? "Grade 1");
       setClasses(classResult.classes);
       setSubjects(subjectResult.subjects);
       setWindows(windowResult.windows);
@@ -484,6 +740,10 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
   return <PortalShell title={overview?.school.name ?? "School portal"} subtitle={`${user.role.replaceAll("_", " ")} · ${user.name}`} onLogout={onLogout}>
     {error && <p className="auth-error" role="alert">{error}</p>}
     {notice && <p className="auth-notice" role="status">{notice}</p>}
+    {overview && <div className="school-brand-banner">
+      {overview.school.logoUrl ? <img src={overview.school.logoUrl} alt={`${overview.school.name} logo`} /> : <div><School size={23} aria-hidden="true" /></div>}
+      <span><strong>{overview.school.name}</strong><small>{overview.school.category || "Category not recorded"} · {overview.school.county}, {overview.school.sub_county} · Grades offered: {overview.school.grades.join(", ") || "Not configured"}</small></span>
+    </div>}
     {activationCode && <div className="teacher-activation-code"><ShieldCheck size={18} /><span><strong>Teacher activation code</strong><code>{activationCode}</code><small>Shown once. Give it to the teacher in person. It expires in seven days.</small></span></div>}
     <section className="school-stat-grid">
       <div><strong>{overview?.counts.students ?? "—"}</strong><span>Students in your access</span></div>
@@ -494,7 +754,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
       {(isSchoolAdmin) && <article className="school-portal-card">
         <h2>Create a class</h2>
         <form className="school-portal-form compact" onSubmit={(event) => void createClass(event)}>
-          <label>Grade<select value={grade} onChange={(event) => setGrade(event.target.value)}>{Array.from({ length: 12 }, (_, index) => <option key={index}>Grade {index + 1}</option>)}</select></label>
+          <label>Grade<select value={grade} onChange={(event) => setGrade(event.target.value)}>{(overview?.school.grades.length ? overview.school.grades : Array.from({ length: 12 }, (_, index) => `Grade ${index + 1}`)).map((schoolGrade) => <option key={schoolGrade}>{schoolGrade}</option>)}</select></label>
           <label>Stream<input required value={stream} onChange={(event) => setStream(event.target.value)} placeholder="A, B, East…" /></label>
           <label>Class Teacher<select name="classTeacherId"><option value="">Not assigned</option>{teachers.filter((teacher) => teacher.profile_id && teacher.account_role === "teacher").map((teacher) => <option key={teacher.id} value={teacher.profile_id!}>{teacher.full_name}</option>)}</select></label>
           <label>Class Coordinator<select name="coordinatorId"><option value="">Not assigned</option>{teachers.filter((teacher) => teacher.profile_id && teacher.account_role === "class_coordinator").map((teacher) => <option key={teacher.id} value={teacher.profile_id!}>{teacher.full_name}</option>)}</select></label>
@@ -640,7 +900,10 @@ function StudentPortal({ user, onLogout }: { user: User; onLogout: () => void })
   return <PortalShell title={data?.school.name ?? "Student portal"} subtitle={`${user.name} · ${data ? `${data.student.grade} ${data.student.stream}` : "Student"}`} onLogout={onLogout}>
     {error && <p className="auth-error" role="alert">{error}</p>}
     {data && <>
-      <section className="student-school-summary"><div><span>ASSESSMENT NUMBER</span><strong>{data.student.assessmentNumber}</strong></div><div><span>GRADE AND STREAM</span><strong>{data.student.grade} {data.student.stream}</strong></div><div><span>SUBJECTS</span><strong>{data.subjects.length}</strong></div></section>
+      <section className="student-school-summary">
+        {data.school.logoUrl && <img className="student-school-logo" src={data.school.logoUrl} alt={`${data.school.name} logo`} />}
+        <div><span>ASSESSMENT NUMBER</span><strong>{data.student.assessmentNumber}</strong></div><div><span>GRADE AND STREAM</span><strong>{data.student.grade} {data.student.stream}</strong></div><div><span>SUBJECTS</span><strong>{data.subjects.length}</strong></div>
+      </section>
       {!!data.notices.length && <section className="student-result-notices" aria-label="Result notices">{data.notices.map((item) => <p key={item.id}>{item.message.toUpperCase()}</p>)}</section>}
       <section className="school-portal-grid">
         <article className="school-portal-card"><h2>My subjects</h2>{data.subjects.map((subject) => <div className="school-list-row" key={subject.id}><strong>{subject.name}</strong><span>Maximum {subject.max_marks}</span></div>)}</article>
