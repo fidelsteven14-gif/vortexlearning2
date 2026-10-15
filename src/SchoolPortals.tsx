@@ -19,6 +19,9 @@ type SchoolRecord = {
   website: string | null;
   grades: string[];
   logoUrl: string | null;
+  email_verification_required: boolean;
+  email_verified_at: string | null;
+  email_verification_status: "not_required" | "pending" | "sent" | "failed" | "verified";
   verification_status: "pending" | "verified" | "rejected";
   operational_status: "active" | "suspended" | "archived";
   administrator: { name: string; email: string | null; invitationStatus: string } | null;
@@ -39,15 +42,14 @@ type SchoolForm = {
   poBox: string;
   website: string;
   grades: string[];
-  administratorName: string;
-  administratorEmail: string;
-  administratorPhone: string;
-  administratorDesignation: string;
 };
 type RegistrationResult = {
-  school: { id: string; name: string; verification_status: string; operational_status: string };
-  administratorInvitationStatus: "sent" | "failed";
-  administratorInvitationMessage: string;
+  school: {
+    id: string; name: string; verification_status: string; operational_status: string;
+    email: string; email_verification_status: "not_required" | "pending" | "sent" | "failed" | "verified";
+  };
+  emailVerificationStatus: "sent" | "failed" | "verified";
+  emailVerificationMessage: string;
 };
 type ClassRecord = { id: string; grade: string; stream: string; class_teacher_id?: string | null; coordinator_id?: string | null; studentCount?: number };
 type SubjectRecord = { id: string; name: string; max_marks: number };
@@ -130,10 +132,6 @@ function emptySchoolForm(): SchoolForm {
     poBox: "",
     website: "",
     grades: [],
-    administratorName: "",
-    administratorEmail: "",
-    administratorPhone: "",
-    administratorDesignation: "School Administrator",
   };
 }
 
@@ -148,6 +146,9 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<SchoolForm>(emptySchoolForm);
+  const [administratorForm, setAdministratorForm] = useState({
+    name: "", email: "", phone: "", designation: "School Administrator",
+  });
   const [schoolLogo, setSchoolLogo] = useState<File | null>(null);
   const [logoError, setLogoError] = useState("");
   const [reviewing, setReviewing] = useState(false);
@@ -159,6 +160,8 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   const [pendingDelete, setPendingDelete] = useState<SchoolRecord | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState("");
   const [deletingSchool, setDeletingSchool] = useState(false);
+  const [resendingSchoolVerification, setResendingSchoolVerification] = useState(false);
+  const [creatingAdministrator, setCreatingAdministrator] = useState(false);
   const logoPreviewUrl = useMemo(() => schoolLogo ? URL.createObjectURL(schoolLogo) : "", [schoolLogo]);
   const refresh = useCallback(() => apiRequest<{ schools: SchoolRecord[] }>("/api/super-admin/schools")
     .then(({ schools: rows }) => { setSchools(rows); setError(""); })
@@ -210,7 +213,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           setLogoUploadError(uploadError instanceof Error ? uploadError.message : "The school was saved, but its logo could not be uploaded.");
         }
       }
-      setNotice("The school record has been saved. Its verification status is pending.");
+      setNotice(created.emailVerificationMessage);
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The school could not be registered.");
@@ -249,23 +252,72 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
     }
   }
 
-  async function retryAdministratorInvitation(schoolId = registration?.school.id) {
-    if (!schoolId) return;
+  async function retryAdministratorInvitation(schoolId: string) {
     setBusy(true);
     setError("");
     try {
-      const result = await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>(
+      await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>(
         `/api/super-admin/schools/${schoolId}/administrator-invitation`,
         { method: "POST" },
       );
-      setRegistration((current) => current?.school.id === schoolId
-        ? { ...current, administratorInvitationStatus: result.invitationStatus, administratorInvitationMessage: result.message }
-        : current);
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The invitation could not be retried.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function resendSchoolEmailVerification(schoolId: string) {
+    setResendingSchoolVerification(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await apiRequest<{ emailVerificationStatus: "sent" | "failed" | "verified"; message: string }>(
+        `/api/super-admin/schools/${schoolId}/email-verification`,
+        { method: "POST" },
+      );
+      setNotice(result.message);
+      setRegistration((current) => current?.school.id === schoolId
+        ? {
+          ...current,
+          emailVerificationStatus: result.emailVerificationStatus,
+          emailVerificationMessage: result.message,
+        }
+        : current);
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "School email verification could not be resent.");
+    } finally {
+      setResendingSchoolVerification(false);
+    }
+  }
+
+  async function addSchoolAdministrator(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreatingAdministrator(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await apiRequest<{ administratorInvitationStatus: "sent" | "failed"; message: string }>(
+        `/api/super-admin/schools/${selectedSchoolId}/administrator`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            administratorName: administratorForm.name,
+            administratorEmail: administratorForm.email,
+            administratorPhone: administratorForm.phone,
+            administratorDesignation: administratorForm.designation,
+          }),
+        },
+      );
+      setNotice(result.message);
+      setAdministratorForm({ name: "", email: "", phone: "", designation: "School Administrator" });
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The School Administrator account could not be created.");
+    } finally {
+      setCreatingAdministrator(false);
     }
   }
 
@@ -337,6 +389,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           <ChevronLeft size={16} /> Back to schools
         </button>
         {error && <p className="auth-error" role="alert">{error}</p>}
+        {notice && <p className="auth-notice" role="status">{notice}</p>}
         {logoNotice && <p className="auth-notice" role="status">{logoNotice}</p>}
         <header className="school-profile-hero">
           {selectedSchool.logoUrl ? <img src={selectedSchool.logoUrl} alt={`${selectedSchool.name} logo`} /> : <div><School size={30} aria-hidden="true" /></div>}
@@ -364,6 +417,9 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
               <div><dt>Registration number</dt><dd>{selectedSchool.examination_code}</dd></div><div><dt>Category and ownership</dt><dd>{selectedSchool.category ?? "Not recorded"} · {selectedSchool.ownership ?? "Not recorded"}</dd></div>
               <div><dt>County / Sub-County</dt><dd>{selectedSchool.county}, {selectedSchool.sub_county}</dd></div><div><dt>Physical location</dt><dd>{selectedSchool.location}</dd></div>
               <div><dt>Official telephone</dt><dd>{selectedSchool.telephone || "Not recorded"}</dd></div><div><dt>Official email</dt><dd>{selectedSchool.email || "Not provided"}</dd></div>
+              <div><dt>Email verification</dt><dd>{selectedSchool.email_verification_required
+                ? selectedSchool.email_verified_at ? "Verified" : selectedSchool.email_verification_status === "sent" ? "Not verified · link sent" : `Not verified · ${selectedSchool.email_verification_status}`
+                : "Not required for this existing school"}</dd></div>
               <div><dt>Postal address</dt><dd>{selectedSchool.po_box || "Not provided"}</dd></div><div><dt>Website</dt><dd>{selectedSchool.website || "Not provided"}</dd></div>
               <div><dt>Grades offered</dt><dd>{selectedSchool.grades?.join(", ") || "Not configured"}</dd></div>
               <div><dt>School Administrator</dt><dd>{selectedSchool.administrator?.name ?? "Not assigned"} · {selectedSchool.administrator?.invitationStatus ?? "not invited"}</dd></div>
@@ -384,6 +440,20 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           </article>
           <article className="school-portal-card school-management-actions">
             <h3>School management</h3>
+            {selectedSchool.email_verification_required && !selectedSchool.email_verified_at && <>
+              <p className="school-onboarding-note">The school's official email must be verified before you can create its School Administrator account.</p>
+              <button type="button" className="quiet-button" disabled={resendingSchoolVerification} onClick={() => void resendSchoolEmailVerification(selectedSchool.id)}>
+                <RefreshCw size={15} /> {resendingSchoolVerification ? "Sending…" : selectedSchool.email_verification_status === "sent" ? "Resend school verification link" : "Send school verification link"}
+              </button>
+            </>}
+            {(!selectedSchool.email_verification_required || selectedSchool.email_verified_at) && !selectedSchool.administrator && <form className="school-portal-form compact" onSubmit={(event) => void addSchoolAdministrator(event)}>
+              <h4>Create School Administrator account</h4>
+              <label>Administrator's full name<input required minLength={2} maxLength={160} value={administratorForm.name} onChange={(event) => setAdministratorForm({ ...administratorForm, name: event.target.value })} /></label>
+              <label>Administrator's email<input required type="email" maxLength={254} value={administratorForm.email} onChange={(event) => setAdministratorForm({ ...administratorForm, email: event.target.value })} /></label>
+              <label>Administrator's telephone<input required type="tel" pattern={phonePattern} title="Enter a valid Kenyan phone number, such as 0712345678 or +254712345678." value={administratorForm.phone} onChange={(event) => setAdministratorForm({ ...administratorForm, phone: event.target.value })} /></label>
+              <label>Job title / designation<input required minLength={2} maxLength={100} value={administratorForm.designation} onChange={(event) => setAdministratorForm({ ...administratorForm, designation: event.target.value })} /></label>
+              <button className="primary-button" type="submit" disabled={creatingAdministrator}>{creatingAdministrator ? "Creating account and sending link…" : "Create account and send activation link"} <ArrowRight size={15} /></button>
+            </form>}
             {selectedSchool.verification_status !== "verified" && <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "verificationStatus", "verified")}><ShieldCheck size={15} /> Verify school</button>}
             {selectedSchool.verification_status === "verified" && <p className="auth-notice">This school is verified.</p>}
             {selectedSchool.operational_status === "active"
@@ -439,17 +509,18 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   return <PortalShell title="Platform administration" subtitle={`Super Admin · ${user.name}`} onLogout={onLogout}>
     <section className="school-portal-grid school-admin-grid">
       <article className="school-portal-card">
-        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>Save official school details and invite its first School Administrator.</p></div></div>
+        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>Register the school and verify its official email before creating the School Administrator account.</p></div></div>
         {error && <p className="auth-error" role="alert">{error}</p>}
         {registration && <div className="school-registration-result" role="status">
           <div className="school-result-heading"><Check size={18} /><strong>{registration.school.name} is registered</strong></div>
           <p>Internal school ID: <code>{registration.school.id}</code></p>
-          <p>Verification status: <strong>{registration.school.verification_status}</strong></p>
-          <p>Administrator invitation: <strong>{registration.administratorInvitationStatus === "sent" ? "Sent — awaiting activation" : "Not sent — retry required"}</strong></p>
-          <p>{registration.administratorInvitationMessage}</p>
-          {registration.administratorInvitationStatus !== "sent" && <button className="quiet-button" type="button" onClick={() => void retryAdministratorInvitation()} disabled={busy}>
-            <RefreshCw size={15} /> Retry administrator invitation
+          <p>School email: <strong>{registration.school.email}</strong></p>
+          <p>Email verification: <strong>{registration.emailVerificationStatus === "verified" ? "Verified" : registration.emailVerificationStatus === "sent" ? "Link sent — awaiting verification" : "Not sent — retry required"}</strong></p>
+          <p>{registration.emailVerificationMessage}</p>
+          {registration.emailVerificationStatus === "failed" && <button className="quiet-button" type="button" onClick={() => void resendSchoolEmailVerification(registration.school.id)} disabled={resendingSchoolVerification}>
+            <RefreshCw size={15} /> Retry school email verification
           </button>}
+          <p>After the school email is verified, select the school in the directory to create its School Administrator account.</p>
           {logoUploadError && <div className="school-upload-recovery"><p>{logoUploadError}</p>
             {schoolLogo && <button className="quiet-button" type="button" onClick={() => void retryLogoUpload()} disabled={busy}><Upload size={15} /> Retry logo upload</button>}
           </div>}
@@ -473,7 +544,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
               <label>Sub-County <span aria-hidden="true">*</span><input required minLength={2} maxLength={120} value={form.subCounty} onChange={(event) => updateForm("subCounty", event.target.value)} placeholder={form.county ? `Enter the Sub-County in ${form.county}` : "Choose a county first"} disabled={!form.county} /></label>
               <label>Physical location <span aria-hidden="true">*</span><input required minLength={2} maxLength={200} value={form.location} onChange={(event) => updateForm("location", event.target.value)} placeholder="Town, ward, or locality" /></label>
               <label>Official school telephone <span aria-hidden="true">*</span><input type="tel" required pattern={phonePattern} title="Enter a valid Kenyan phone number, such as 0712345678 or +254712345678." value={form.telephone} onChange={(event) => updateForm("telephone", event.target.value)} /></label>
-              <label>Official school email <span className="optional-label">(optional)</span><input type="email" maxLength={254} value={form.email} onChange={(event) => updateForm("email", event.target.value)} /></label>
+              <label>Official school email <span aria-hidden="true">*</span><input required type="email" maxLength={254} value={form.email} onChange={(event) => updateForm("email", event.target.value)} /></label>
               <label>Postal address <span className="optional-label">(optional)</span><input maxLength={80} value={form.poBox} onChange={(event) => updateForm("poBox", event.target.value)} /></label>
               <label>School website <span className="optional-label">(optional)</span><input type="url" maxLength={255} value={form.website} onChange={(event) => updateForm("website", event.target.value)} placeholder="https://" /></label>
               <fieldset className="school-grade-picker">
@@ -486,7 +557,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
             </> : <dl className="school-review-grid">
               <div><dt>School</dt><dd>{form.name}</dd></div><div><dt>Official registration number</dt><dd>{form.examinationCode}</dd></div>
               <div><dt>Category and ownership</dt><dd>{form.category} · {form.ownership}</dd></div><div><dt>County / Sub-County</dt><dd>{form.county} · {form.subCounty}</dd></div>
-              <div><dt>Location and telephone</dt><dd>{form.location} · {form.telephone}</dd></div><div><dt>School email</dt><dd>{form.email || "Not provided"}</dd></div>
+              <div><dt>Location and telephone</dt><dd>{form.location} · {form.telephone}</dd></div><div><dt>School email</dt><dd>{form.email}</dd></div>
               <div><dt>Postal address / website</dt><dd>{form.poBox || "—"} · {form.website || "—"}</dd></div><div><dt>Grades offered</dt><dd>{form.grades.join(", ")}</dd></div>
             </dl>}
           </section>
@@ -515,23 +586,10 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
             </div>
             {logoError && <p className="auth-error" role="alert">{logoError}</p>}
           </section>
-          <section className="school-form-section">
-            <h3>Section C: School Administrator Information</h3>
-            {!reviewing ? <>
-              <label>Administrator's full name <span aria-hidden="true">*</span><input required minLength={2} maxLength={160} value={form.administratorName} onChange={(event) => updateForm("administratorName", event.target.value)} /></label>
-              <label>Administrator's email <span aria-hidden="true">*</span><input type="email" required maxLength={254} value={form.administratorEmail} onChange={(event) => updateForm("administratorEmail", event.target.value)} /></label>
-              <label>Administrator's telephone <span aria-hidden="true">*</span><input type="tel" required pattern={phonePattern} title="Enter a valid Kenyan phone number, such as 0712345678 or +254712345678." value={form.administratorPhone} onChange={(event) => updateForm("administratorPhone", event.target.value)} /></label>
-              <label>Job title / designation <span aria-hidden="true">*</span><input required minLength={2} maxLength={100} value={form.administratorDesignation} onChange={(event) => updateForm("administratorDesignation", event.target.value)} /></label>
-            </> : <dl className="school-review-grid">
-              <div><dt>Administrator</dt><dd>{form.administratorName}</dd></div><div><dt>Email invitation</dt><dd>{form.administratorEmail}</dd></div>
-              <div><dt>Telephone</dt><dd>{form.administratorPhone}</dd></div><div><dt>Job title</dt><dd>{form.administratorDesignation}</dd></div>
-            </dl>}
-            <p className="school-onboarding-note">Principal, teachers, and other school personnel are onboarded later by the School Administrator.</p>
-          </section>
           {error && <p className="auth-error" role="alert">{error}</p>}
           <div className="school-form-actions">
             {reviewing && <button className="quiet-button" type="button" onClick={() => setReviewing(false)} disabled={busy}>Edit details</button>}
-            <button className="primary-button" type="submit" disabled={busy}>{busy ? "Saving school and sending invitation…" : reviewing ? "Confirm and register school" : "Review registration"} <ArrowRight size={15} /></button>
+            <button className="primary-button" type="submit" disabled={busy}>{busy ? "Saving school and sending verification…" : reviewing ? "Register school and verify email" : "Review registration"} <ArrowRight size={15} /></button>
           </div>
         </form>
       </article>
@@ -633,7 +691,12 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }, [user.role]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    if (user.role !== "school_admin") return;
+    const interval = window.setInterval(() => { void refresh(); }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [refresh, user.role]);
 
   useEffect(() => {
     if (!selectedWindowId || !["teacher", "class_coordinator", "school_admin"].includes(user.role)) return;
@@ -993,7 +1056,7 @@ function StaffPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>)}
       </article>}
       {user.role === "school_admin" && <article className="school-portal-card">
-        <h2>Teachers</h2>{teachers.map((teacher) => <div className="school-list-row" key={teacher.id}><div><strong>{teacher.full_name}</strong><small>{teacher.department_head ? `Head of ${teacher.department_head}` : teacher.subject_head ? `Head of ${teacher.subject_head}` : "Teacher"} · {teacher.teacher_email ?? "No email recorded"} · {teacher.invitation_status ?? "not invited"}</small></div><span>{teacher.phone_number}</span>{teacher.teacher_email && teacher.invitation_status !== "accepted" && <button className="quiet-button" type="button" disabled={resendingTeacherId === teacher.id} onClick={() => void resendTeacherInvitation(teacher)}>{resendingTeacherId === teacher.id ? "Sending…" : "Resend email code"}</button>}</div>)}
+        <h2>Teachers</h2>{teachers.map((teacher) => <div className="school-list-row" key={teacher.id}><div><strong>{teacher.full_name}</strong><small>{teacher.department_head ? `Head of ${teacher.department_head}` : teacher.subject_head ? `Head of ${teacher.subject_head}` : "Teacher"} · {teacher.teacher_email ?? "No email recorded"} · {teacher.invitation_status === "accepted" ? "Verified" : teacher.invitation_status === "verified" ? "Email verified · activation pending" : teacher.invitation_status === "failed" ? "Activation email not sent" : "Not verified"}</small></div><span>{teacher.phone_number}</span>{teacher.teacher_email && teacher.invitation_status !== "accepted" && <button className="quiet-button" type="button" disabled={resendingTeacherId === teacher.id} onClick={() => void resendTeacherInvitation(teacher)}>{resendingTeacherId === teacher.id ? "Sending…" : "Resend activation email"}</button>}</div>)}
       </article>}
       {user.role === "teacher" && departmentTeachers.length > 0 && <article className="school-portal-card">
         <h2>{departmentTeachers[0].department_head} department</h2>

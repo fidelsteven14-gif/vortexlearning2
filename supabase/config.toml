@@ -2,6 +2,7 @@ project_id = "vortexlearning2"
 
 [auth.email]
 otp_length = 6
+otp_expiry = 10800
 
 [functions.api]
 verify_jwt = false

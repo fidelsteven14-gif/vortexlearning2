@@ -97,7 +97,10 @@ export type CurriculumRegistration = {
 const tokenKey = "jifunze.session";
 const refreshTokenKey = "jifunze.refresh";
 export const supportEmail = import.meta.env.VITE_SUPPORT_EMAIL ?? "vortexlearning0@gmail.com";
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/, "");
+const configuredApiBase = (
+  import.meta.env.VITE_API_BASE_URL?.trim()
+  || "https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1"
+).replace(/\/+$/, "");
 
 function apiUrl(path: string): string {
   if (!configuredApiBase) return path;
@@ -137,9 +140,7 @@ async function parseApiResponse(response: Response): Promise<{
 }
 
 function unexpectedApiResponseMessage(): string {
-  return import.meta.env.PROD && !configuredApiBase
-    ? "The API is not configured for this website. Deploy the backend separately, set VITE_API_BASE_URL to its HTTPS address, and allow this website in the backend's CORS configuration."
-    : "The server returned a page instead of an API response. Check the API address and hosting configuration.";
+  return "The server returned a page instead of an API response. Check the API address and hosting configuration.";
 }
 
 export class ApiRequestError extends Error {
@@ -212,9 +213,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       response = await fetch(url, { ...options, headers: requestHeaders(options, getToken()) });
     }
   } catch {
-    throw new Error(import.meta.env.PROD && !configuredApiBase
-      ? unexpectedApiResponseMessage()
-      : "The learning service is unavailable. Check the API address, backend status, and allowed website origins.");
+    throw new Error("The learning service is unavailable. Check the API address, backend status, and allowed website origins.");
   }
 
   const { data, hasJson } = await parseApiResponse(response);
@@ -235,9 +234,7 @@ export async function apiFileRequest(path: string): Promise<Blob> {
       response = await fetch(url, { headers: requestHeaders({}, getToken()) });
     }
   } catch {
-    throw new Error(import.meta.env.PROD && !configuredApiBase
-      ? unexpectedApiResponseMessage()
-      : "The learning service is unavailable. Check the API address, backend status, and allowed website origins.");
+    throw new Error("The learning service is unavailable. Check the API address, backend status, and allowed website origins.");
   }
   if (!response.ok) {
     const { data, hasJson } = await parseApiResponse(response);

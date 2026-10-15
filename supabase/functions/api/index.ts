@@ -168,15 +168,22 @@ const schoolInputSchema = z.object({
   subCounty: z.string().trim().min(2).max(120),
   location: z.string().trim().min(2).max(200),
   telephone: kenyanPhoneSchema,
-  email: emailSchema.optional().or(z.literal("")),
+  email: emailSchema,
   poBox: z.string().trim().max(80).optional(),
   website: z.string().trim().url().max(255).optional().or(z.literal("")),
   grades: z.array(gradeSchema).min(1).max(12).refine((grades) => new Set(grades).size === grades.length, "Remove duplicate grades."),
+}).strict();
+const schoolAdministratorInputSchema = z.object({
   administratorName: z.string().trim().min(2).max(160),
   administratorEmail: emailSchema,
   administratorPhone: kenyanPhoneSchema,
   administratorDesignation: z.string().trim().min(2).max(100).default("School Administrator"),
 }).strict();
+const schoolEmailVerificationSchema = z.object({
+  schoolId: z.string().uuid(),
+  accessToken: z.string().min(20).max(8192),
+  refreshToken: z.string().min(20).max(8192),
+});
 const teacherInvitationVerificationSchema = z.object({
   schoolName: schoolNameSchema,
   email: emailSchema,
@@ -428,6 +435,73 @@ function schoolAdminInviteRedirect(request: Request): string {
     : `${origin}/`;
 }
 
+function schoolEmailVerificationRedirect(request: Request, schoolId: string): string {
+  return `${schoolAdminInviteRedirect(request)}?schoolEmailVerification=${encodeURIComponent(schoolId)}`;
+}
+
+function staffActivationRedirect(request: Request): string {
+  return `${schoolAdminInviteRedirect(request)}?activateStaff=1`;
+}
+
+async function sendSchoolEmailVerification(
+  request: Request,
+  school: { id: string; name: string; email: string; emailVerifiedAt: string | null; verificationUserId: string | null },
+): Promise<{ sent: boolean; message: string }> {
+  if (school.emailVerifiedAt) return { sent: false, message: "The school email address is already verified." };
+  if (school.verificationUserId) {
+    const { data: existingUser, error: lookupError } = await service.auth.admin.getUserById(school.verificationUserId);
+    if (lookupError && !lookupError.message.toLowerCase().includes("not found")) {
+      console.error("Pending school email verification lookup failed:", lookupError.name);
+      return { sent: false, message: "The previous school email verification could not be checked. Contact support before sending another link." };
+    }
+    if (existingUser.user) {
+      const { error } = await service.auth.admin.deleteUser(school.verificationUserId);
+      if (error) {
+        console.error("Pending school email verification cleanup failed:", error.name);
+        return { sent: false, message: "The previous school email verification is still pending. Contact support before sending another link." };
+      }
+    }
+  }
+
+  const { data, error } = await service.auth.admin.inviteUserByEmail(school.email, {
+    data: { name: school.name, schoolEmailVerificationId: school.id },
+    redirectTo: schoolEmailVerificationRedirect(request, school.id),
+  });
+  if (error || !data.user) {
+    if (error) console.error("School email verification invitation failed:", error.name);
+    const { error: statusError } = await service.from("schools").update({
+      email_verification_status: "failed",
+      email_verification_user_id: null,
+    }).eq("id", school.id);
+    if (statusError) throw new Error(statusError.message);
+    return {
+      sent: false,
+      message: "The school was saved, but its verification link could not be sent. Check the school email and Supabase email delivery settings, then retry.",
+    };
+  }
+
+  let linkQuery = service.from("schools").update({
+    email_verification_status: "sent",
+    email_verification_user_id: data.user.id,
+  }).eq("id", school.id).is("email_verified_at", null);
+  linkQuery = school.verificationUserId
+    ? linkQuery.eq("email_verification_user_id", school.verificationUserId)
+    : linkQuery.is("email_verification_user_id", null);
+  const { data: linked, error: updateError } = await linkQuery.select("id").maybeSingle();
+  if (updateError) {
+    console.error("School email verification link could not be linked:", updateError.code);
+    const { error: deleteError } = await service.auth.admin.deleteUser(data.user.id);
+    if (deleteError) console.error("Unlinked school verification account cleanup failed:", deleteError.name);
+    throw new Error("The school was saved, but its verification link could not be linked. Contact support before retrying.");
+  }
+  if (!linked) {
+    const { error: deleteError } = await service.auth.admin.deleteUser(data.user.id);
+    if (deleteError) throw new Error("A superseded school email verification account could not be removed.");
+    return { sent: false, message: "The school's email verification changed during this request. Refresh the school profile before trying again." };
+  }
+  return { sent: true, message: `A one-time school email verification link has been sent to ${school.email}.` };
+}
+
 async function schoolLogoUrl(storageKey: string | null): Promise<string | null> {
   if (!storageKey) return null;
   const { data, error } = await service.storage.from("school-documents").createSignedUrl(storageKey, 3600);
@@ -495,7 +569,7 @@ async function sendSchoolAdminInvitation(
     const { error } = await service.auth.resend({
       type: "signup",
       email: administrator.email,
-      options: { emailRedirectTo: schoolAdminInviteRedirect(request) },
+      options: { emailRedirectTo: staffActivationRedirect(request) },
     });
     if (error) {
       console.error("School Administrator invitation resend failed:", error.name);
@@ -507,7 +581,7 @@ async function sendSchoolAdminInvitation(
     if (statusError) throw new Error(statusError.message);
     return {
       sent: true,
-      message: "A new activation email has been sent. Follow its secure link, or enter its six-digit code under Complete a School Administrator invitation.",
+      message: `A new activation link has been sent to ${administrator.email}. Open the email button to activate the account.`,
     };
   }
 
@@ -524,7 +598,8 @@ async function sendSchoolAdminInvitation(
     };
   }
 
-  const { data: profile, error: profileError } = await service.from("profiles").update({
+  const { data: profile, error: profileError } = await service.from("profiles").insert({
+    id: data.user.id,
     name: administrator.name,
     username: null,
     email: administrator.email,
@@ -534,7 +609,7 @@ async function sendSchoolAdminInvitation(
     school_id: administrator.schoolId,
     phone_number: administrator.phone,
     active: false,
-  }).eq("id", data.user.id).select("id").maybeSingle();
+  }).select("id").maybeSingle();
   if (profileError || !profile) {
     console.error("School Administrator profile setup failed:", profileError?.code ?? "profile-missing");
     const { error: deleteError } = await service.auth.admin.deleteUser(data.user.id);
@@ -592,7 +667,7 @@ async function sendSchoolStaffInvitation(
     const { error } = await service.auth.resend({
       type: "signup",
       email: teacher.email,
-      options: { emailRedirectTo: schoolAdminInviteRedirect(request) },
+      options: { emailRedirectTo: staffActivationRedirect(request) },
     });
     if (error) {
       console.error("School staff invitation resend failed:", error.name);
@@ -600,7 +675,7 @@ async function sendSchoolStaffInvitation(
       return { sent: false, message: "The verification code could not be resent. Check Supabase email delivery settings and retry." };
     }
     await setInvitationStatus("sent");
-    return { sent: true, message: `A new verification code has been sent to ${teacher.email}.` };
+    return { sent: true, message: `A new activation email has been sent to ${teacher.email}. Open its secure button to activate the account.` };
   }
 
   const temporaryPassword = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -609,7 +684,7 @@ async function sendSchoolStaffInvitation(
     password: temporaryPassword,
     options: {
       data: { name: teacher.name },
-      emailRedirectTo: schoolAdminInviteRedirect(request),
+      emailRedirectTo: staffActivationRedirect(request),
     },
   });
   if (error || !data.user || data.user.identities?.length === 0) {
@@ -622,7 +697,8 @@ async function sendSchoolStaffInvitation(
     return { sent: false, message: "The teacher record was saved, but its verification email was not sent. Correct the email delivery issue and resend the invitation." };
   }
 
-  const { data: linkedProfile, error: profileError } = await service.from("profiles").update({
+  const { data: linkedProfile, error: profileError } = await service.from("profiles").insert({
+    id: data.user.id,
     name: teacher.name,
     username: null,
     email: teacher.email,
@@ -634,7 +710,7 @@ async function sendSchoolStaffInvitation(
     class_id: null,
     phone_number: teacher.phone,
     active: false,
-  }).eq("id", data.user.id).select("id").maybeSingle();
+  }).select("id").maybeSingle();
   if (profileError || !linkedProfile) {
     console.error("School staff profile setup failed:", profileError?.code ?? "profile-missing");
     const { error: deleteError } = await service.auth.admin.deleteUser(data.user.id);
@@ -654,7 +730,7 @@ async function sendSchoolStaffInvitation(
     await setInvitationStatus("failed");
     return { sent: false, message: "The teacher record was saved, but its invitation could not be linked. Contact support before retrying." };
   }
-  return { sent: true, message: `A six-digit email verification code has been sent to ${teacher.email}.` };
+  return { sent: true, message: `An activation email with a one-time code and secure button has been sent to ${teacher.email}.` };
 }
 
 function randomId(): string {
@@ -671,6 +747,47 @@ async function appSession(session: { access_token: string; refresh_token: string
 async function authRoutes(request: Request, path: string): Promise<Response | null> {
   const limited = async (limit: number, seconds: number): Promise<boolean> =>
     await rateAllowed(request, path, limit, seconds);
+
+  if (request.method === "POST" && path === "/api/auth/verify-school-email") {
+    if (!await limited(8, 900)) return fail("Too many school email verification attempts. Please wait and try again.", 429);
+    const parsed = schoolEmailVerificationSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const client = authClient();
+    const { data: session, error: sessionError } = await client.auth.setSession({
+      access_token: parsed.data.accessToken,
+      refresh_token: parsed.data.refreshToken,
+    });
+    if (sessionError || !session.user?.email || !session.user.email_confirmed_at) {
+      return fail("This school email link is invalid or expired. Ask the Super Admin to resend it.", 400);
+    }
+    const { data: school, error: schoolError } = await service.from("schools")
+      .select("id,email,email_verification_required,email_verified_at,email_verification_user_id")
+      .eq("id", parsed.data.schoolId).maybeSingle();
+    if (schoolError) throw new Error(schoolError.message);
+    if (!school || !school.email_verification_required || school.email !== session.user.email.toLowerCase()) {
+      return fail("This link is not valid for the registered school email address.", 403);
+    }
+    if (school.email_verified_at) {
+      return json({ message: "The school email address is already verified." });
+    }
+    if (school.email_verification_user_id !== session.user.id) {
+      return fail("This school email link is no longer active. Ask the Super Admin to resend it.", 403);
+    }
+    const { error: deleteError } = await service.auth.admin.deleteUser(session.user.id);
+    if (deleteError) {
+      console.error("Temporary school email verification account cleanup failed:", deleteError.name);
+      return fail("The email was confirmed, but the verification could not be completed. Please try the link again.", 500);
+    }
+    const { data: verifiedSchool, error: updateError } = await service.from("schools").update({
+      email_verified_at: new Date().toISOString(),
+      email_verification_status: "verified",
+      email_verification_user_id: null,
+    }).eq("id", school.id).eq("email_verification_user_id", session.user.id)
+      .is("email_verified_at", null).select("id").maybeSingle();
+    if (updateError) throw new Error(updateError.message);
+    if (!verifiedSchool) return fail("The school email verification was already completed or the link has expired.", 409);
+    return json({ message: "The school email address is verified. The Super Admin can now create the School Administrator account." });
+  }
 
   if (request.method === "POST" && path === "/api/auth/resend-verification") {
     if (!await limited(5, 3600)) return fail("Too many verification requests. Please wait and try again.", 429);
@@ -718,37 +835,44 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       access_token: parsed.data.token,
       refresh_token: parsed.data.refreshToken,
     });
-    if (error || !data.user?.email) return fail("This invitation is invalid or has expired. Ask your School Administrator to resend it.", 400);
+    if (error || !data.session || !data.user?.email) return fail("This invitation is invalid or has expired. Ask your School Administrator to resend it.", 400);
 
     const { data: profile, error: profileError } = await service.from("profiles")
       .select("id,email,role,active,school_id")
       .eq("id", data.user.id).maybeSingle();
     if (profileError) throw new Error(profileError.message);
-    if (!profile || profile.role !== "school_admin" || profile.active || profile.email !== data.user.email.toLowerCase()) {
-      return fail("This invitation is not valid for this School Administrator account.", 403);
+    if (!profile || !["school_admin", "teacher", "class_coordinator"].includes(profile.role)
+      || profile.active || profile.email !== data.user.email.toLowerCase()) {
+      return fail("This invitation is not valid for this school staff account.", 403);
     }
     if (!data.user.email_confirmed_at) {
       return fail("Confirm your email using the invitation link before choosing a password.", 400);
     }
-    const { data: administrator, error: administratorError } = await service.from("teacher_records")
-      .select("id,school_id").eq("profile_id", data.user.id).eq("account_role", "school_admin").maybeSingle();
-    if (administratorError) throw new Error(administratorError.message);
-    if (!administrator || administrator.school_id !== profile.school_id) {
-      return fail("This invitation is not linked to a school administrator record.", 403);
+    const { data: staffRecord, error: staffError } = await service.from("teacher_records")
+      .select("id,school_id,teacher_email,administrator_email,account_role,invitation_status")
+      .eq("profile_id", data.user.id).maybeSingle();
+    if (staffError) throw new Error(staffError.message);
+    const recordEmail = profile.role === "school_admin" ? staffRecord?.administrator_email : staffRecord?.teacher_email;
+    if (!staffRecord || staffRecord.school_id !== profile.school_id || recordEmail !== profile.email
+      || staffRecord.account_role !== profile.role || !["sent", "verified"].includes(staffRecord.invitation_status)) {
+      return fail("This invitation is not linked to a pending account at your school.", 403);
     }
 
     const { error: passwordError } = await client.auth.updateUser({ password: parsed.data.password });
-    if (passwordError) return fail("Your password could not be set. Ask the School Administrator to resend the invitation.", 400);
+    if (passwordError) return fail("Your password could not be set. Ask the person who registered your account to resend the invitation.", 400);
     const { data: activated, error: activateError } = await service.from("profiles").update({
       active: true,
       email_verified: true,
-    }).eq("id", data.user.id).eq("role", "school_admin").eq("active", false).select("id").maybeSingle();
+    }).eq("id", data.user.id).eq("role", profile.role).eq("active", false).select("id").maybeSingle();
     if (activateError) throw new Error(activateError.message);
     if (!activated) return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
     const { error: invitationUpdateError } = await service.from("teacher_records")
-      .update({ invitation_status: "accepted" }).eq("id", administrator.id);
+      .update({ invitation_status: "accepted" }).eq("id", staffRecord.id);
     if (invitationUpdateError) throw new Error(invitationUpdateError.message);
-    return json({ message: "Your email is confirmed and your School Administrator account is ready. You can now sign in." });
+    return json({
+      ...await appSession(data.session, data.user.id),
+      message: "Your email is confirmed and your account is active.",
+    });
   }
 
   if (request.method === "POST" && path === "/api/auth/accept-school-invitation-code") {
@@ -1129,7 +1253,7 @@ async function onboardingRoutes(request: Request, path: string): Promise<Respons
           .maybeSingle();
         if (error) throw new Error(error.message);
         const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
-        if (profile?.active) email = profile.email;
+        if (profile?.active && profile.email_verified) email = profile.email;
       } else {
         const normalizedPhone = phoneSchema.safeParse(input.identifier);
         if (normalizedPhone.success) {
@@ -1152,15 +1276,25 @@ async function onboardingRoutes(request: Request, path: string): Promise<Respons
       if (error) throw new Error(error.message);
       const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
       if (profile?.active && profile.email_verified) email = profile.email;
-    } else {
-      const normalizedPhone = phoneSchema.safeParse(input.identifier);
-      if (school && normalizedPhone.success) {
-        const { data, error } = await service.from("teacher_records").select("profiles!inner(email,active,email_verified,role)")
-          .eq("school_id", school.id).eq("phone_normalized", normalizedPhone.data)
-          .in("profiles.role", ["teacher", "class_coordinator", "school_admin"]).maybeSingle();
+    } else if (school) {
+      const normalizedEmail = emailSchema.safeParse(input.identifier);
+      if (normalizedEmail.success) {
+        const { data, error } = await service.from("profiles").select("email,active,email_verified,role")
+          .eq("school_id", school.id).eq("email", normalizedEmail.data)
+          .in("role", ["teacher", "class_coordinator", "school_admin"]).maybeSingle();
         if (error) throw new Error(error.message);
-        const profile = (data as { profiles: { email: string; active: boolean; email_verified: boolean; role: string } } | null)?.profiles;
+        const profile = data as { email: string; active: boolean; email_verified: boolean } | null;
         if (profile?.active && profile.email_verified) email = profile.email;
+      } else {
+        const normalizedPhone = phoneSchema.safeParse(input.identifier);
+        if (normalizedPhone.success) {
+          const { data, error } = await service.from("teacher_records").select("profiles!inner(email,active,email_verified,role)")
+            .eq("school_id", school.id).eq("phone_normalized", normalizedPhone.data)
+            .in("profiles.role", ["teacher", "class_coordinator", "school_admin"]).maybeSingle();
+          if (error) throw new Error(error.message);
+          const profile = (data as { profiles: { email: string; active: boolean; email_verified: boolean; role: string } } | null)?.profiles;
+          if (profile?.active && profile.email_verified) email = profile.email;
+        }
       }
     }
     if (!email) return fail("School, account number, or password is incorrect.", 401);
@@ -1425,7 +1559,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (!parsed.success) return invalidBody(parsed);
     const schoolId = decodeURIComponent(permanentDeleteRoute[1]);
     const { data: school, error: schoolError } = await service.from("schools")
-      .select("id,name,operational_status").eq("id", schoolId).maybeSingle();
+      .select("id,name,operational_status,email_verification_user_id").eq("id", schoolId).maybeSingle();
     if (schoolError) throw new Error(schoolError.message);
     if (!school) return fail("This school was not found.", 404);
     if (school.operational_status !== "archived") {
@@ -1442,6 +1576,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       details_json: { name: school.name },
     });
     if (auditError) throw new Error(auditError.message);
+    if (school.email_verification_user_id) {
+      const { error: verificationUserError } = await service.auth.admin.deleteUser(school.email_verification_user_id);
+      if (verificationUserError) throw new Error(`The temporary school verification account could not be removed: ${verificationUserError.message}`);
+    }
     const storageObjects = await schoolStorageObjects(schoolId);
     const { error: deleteError } = await service.rpc("delete_school_permanently", { p_school_id: schoolId });
     if (deleteError) throw new Error(deleteError.message);
@@ -1489,7 +1627,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
   if (path === "/api/super-admin/schools" && request.method === "GET") {
     if (!isSuperAdmin) return fail("You do not have permission to view platform schools.", 403);
     const { data, error } = await service.from("schools")
-      .select("id,name,examination_code,category,ownership,county,sub_county,location,telephone,logo_storage_key,email,po_box,website,grades,verification_status,operational_status,active,created_at")
+      .select("id,name,examination_code,category,ownership,county,sub_county,location,telephone,logo_storage_key,email,email_verification_required,email_verified_at,email_verification_status,po_box,website,grades,verification_status,operational_status,active,created_at")
       .order("name");
     if (error) throw new Error(error.message);
     const schools = data as Array<Record<string, unknown> & { id: string }>;
@@ -1553,16 +1691,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     const parsed = schoolInputSchema.safeParse(await bodyJson(request));
     if (!parsed.success) return invalidBody(parsed);
     const input = parsed.data;
-    const { data: existingProfile, error: profileLookupError } = await service.from("profiles")
-      .select("id").eq("email", input.administratorEmail).maybeSingle();
-    if (profileLookupError) throw new Error(profileLookupError.message);
-    if (existingProfile) return fail("That email address already belongs to an account. Use a different administrator email or assign the existing account through a reviewed workflow.", 409);
-    const { data: existingAdministrator, error: administratorLookupError } = await service.from("teacher_records")
-      .select("id").eq("administrator_email", input.administratorEmail).maybeSingle();
-    if (administratorLookupError) throw new Error(administratorLookupError.message);
-    if (existingAdministrator) return fail("That email address already has a School Administrator invitation.", 409);
-
-    const { data: createdRows, error } = await service.rpc("create_school_onboarding_records", {
+    const { data: schoolId, error } = await service.rpc("create_school_registration", {
       p_name: input.name,
       p_examination_code: input.examinationCode,
       p_category: input.category,
@@ -1576,38 +1705,114 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       p_website: input.website || "",
       p_grades: input.grades,
       p_created_by: profile.id,
-      p_administrator_name: input.administratorName,
-      p_administrator_email: input.administratorEmail,
-      p_administrator_phone: input.administratorPhone,
-      p_administrator_designation: input.administratorDesignation,
     });
-    if (error?.code === "23505") return fail("A school with that name, registration number, or administrator email is already registered.", 409);
+    if (error?.code === "23505") return fail("A school with that name, registration number, or official email is already registered.", 409);
     if (error) throw new Error(error.message);
-    const created = (createdRows as Array<{ school_id: string; administrator_id: string }> | null)?.[0];
-    if (!created) throw new Error("School registration completed without returning the created school and administrator records.");
-    const invitation = await sendSchoolAdminInvitation(request, {
-      id: created.administrator_id,
-      schoolId: created.school_id,
-      name: input.administratorName,
-      email: input.administratorEmail,
-      phone: input.administratorPhone,
-      designation: input.administratorDesignation,
-      profileId: null,
-      invitationStatus: "pending",
+    if (typeof schoolId !== "string") throw new Error("School registration completed without returning the created school ID.");
+    const { data: registeredSchool, error: schoolError } = await service.from("schools")
+      .select("id,name,email,email_verified_at,email_verification_user_id")
+      .eq("id", schoolId).single();
+    if (schoolError) throw new Error(schoolError.message);
+    if (!registeredSchool.email) throw new Error("School registration completed without its required official email address.");
+    const verification = await sendSchoolEmailVerification(request, {
+      id: registeredSchool.id,
+      name: registeredSchool.name,
+      email: registeredSchool.email,
+      emailVerifiedAt: registeredSchool.email_verified_at,
+      verificationUserId: registeredSchool.email_verification_user_id,
     });
-    await recordAdminAction(profile.id, "school_created", "school", created.school_id, {
+    await recordAdminAction(profile.id, "school_created", "school", schoolId, {
       name: input.name,
-      administratorInvitationStatus: invitation.sent ? "sent" : "failed",
+      emailVerificationStatus: verification.sent ? "sent" : "failed",
     });
     const { data: school, error: schoolError } = await service.from("schools")
-      .select("id,name,examination_code,verification_status,operational_status")
-      .eq("id", created.school_id).single();
+      .select("id,name,examination_code,verification_status,operational_status,email,email_verification_required,email_verified_at,email_verification_status")
+      .eq("id", schoolId).single();
     if (schoolError) throw new Error(schoolError.message);
     return json({
       school,
+      emailVerificationStatus: verification.sent ? "sent" : "failed",
+      emailVerificationMessage: verification.message,
+    }, verification.sent ? 201 : 202);
+  }
+
+  const schoolEmailVerificationRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/email-verification$/);
+  if (schoolEmailVerificationRoute && request.method === "POST") {
+    if (!isSuperAdmin) return fail("You do not have permission to manage school email verification.", 403);
+    if (!await rateAllowed(request, path, 5, 900)) return fail("Too many school email verification requests. Please wait and try again.", 429);
+    const schoolId = decodeURIComponent(schoolEmailVerificationRoute[1]);
+    const { data: row, error } = await service.from("schools")
+      .select("id,name,email,email_verification_required,email_verified_at,email_verification_user_id")
+      .eq("id", schoolId).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!row || !row.email_verification_required || !row.email) return fail("This school has no email address requiring verification.", 404);
+    const result = await sendSchoolEmailVerification(request, {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      emailVerifiedAt: row.email_verified_at,
+      verificationUserId: row.email_verification_user_id,
+    });
+    return json({
+      emailVerificationStatus: result.sent ? "sent" : row.email_verified_at ? "verified" : "failed",
+      message: result.message,
+    }, result.sent || row.email_verified_at ? 200 : 202);
+  }
+
+  const schoolAdministratorRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/administrator$/);
+  if (schoolAdministratorRoute && request.method === "POST") {
+    if (!isSuperAdmin) return fail("You do not have permission to onboard School Administrators.", 403);
+    if (!await rateAllowed(request, path, 8, 900)) return fail("Too many School Administrator registrations. Please wait and try again.", 429);
+    const parsed = schoolAdministratorInputSchema.safeParse(await bodyJson(request));
+    if (!parsed.success) return invalidBody(parsed);
+    const schoolId = decodeURIComponent(schoolAdministratorRoute[1]);
+    const { data: school, error: schoolError } = await service.from("schools")
+      .select("id,name,email,email_verification_required,email_verified_at,email_verification_user_id")
+      .eq("id", schoolId).maybeSingle();
+    if (schoolError) throw new Error(schoolError.message);
+    if (!school) return fail("This school was not found.", 404);
+    if (school.email_verification_required && !school.email_verified_at) {
+      return fail("Verify the school's official email before creating its School Administrator account.", 409);
+    }
+    const { data: existingAdministrator, error: existingError } = await service.from("teacher_records")
+      .select("id").eq("school_id", schoolId).eq("account_role", "school_admin").maybeSingle();
+    if (existingError) throw new Error(existingError.message);
+    if (existingAdministrator) return fail("This school already has a School Administrator record.", 409);
+    const { data: existingProfile, error: profileError } = await service.from("profiles")
+      .select("id").eq("email", parsed.data.administratorEmail).maybeSingle();
+    if (profileError) throw new Error(profileError.message);
+    if (existingProfile) return fail("That email address already belongs to an account. Use a different administrator email.", 409);
+    const { data: administrator, error: insertError } = await service.from("teacher_records").insert({
+      school_id: school.id,
+      account_role: "school_admin",
+      full_name: parsed.data.administratorName,
+      phone_number: parsed.data.administratorPhone,
+      phone_normalized: parsed.data.administratorPhone,
+      administrator_email: parsed.data.administratorEmail,
+      designation: parsed.data.administratorDesignation,
+      invitation_status: "pending",
+      created_by: profile.id,
+    }).select("id,school_id,full_name,administrator_email,phone_number,designation,profile_id,invitation_status").single();
+    if (insertError?.code === "23505") return fail("That email or phone number is already registered for a school account.", 409);
+    if (insertError) throw new Error(insertError.message);
+    const invitation = await sendSchoolAdminInvitation(request, {
+      id: administrator.id,
+      schoolId: administrator.school_id,
+      name: administrator.full_name,
+      email: administrator.administrator_email,
+      phone: administrator.phone_number,
+      designation: administrator.designation,
+      profileId: administrator.profile_id,
+      invitationStatus: administrator.invitation_status,
+    });
+    await recordAdminAction(profile.id, "school_admin_onboarded", "school", school.id, {
+      email: administrator.administrator_email,
+      invitationStatus: invitation.sent ? "sent" : "failed",
+    });
+    return json({
       administratorInvitationStatus: invitation.sent ? "sent" : "failed",
-      administratorInvitationMessage: invitation.message,
-    }, 201);
+      message: invitation.message,
+    }, invitation.sent ? 201 : 202);
   }
 
   if (path === "/api/school/overview" && request.method === "GET") {

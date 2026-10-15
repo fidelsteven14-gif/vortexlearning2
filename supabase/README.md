@@ -7,8 +7,8 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
 1. In the GitHub repository settings, add the Actions secrets `SUPABASE_ACCESS_TOKEN` (create a personal access token in Supabase account settings) and `SUPABASE_DB_PASSWORD` (the database password set when creating the project). Never put either value in source control or chat.
 2. Run the **Deploy Supabase backend** workflow. It applies the SQL migrations before deploying the API function.
 3. In Supabase Authentication → URL Configuration, set the **Site URL** to `https://fidelsteven14-gif.github.io/vortexlearning2/` and add `https://fidelsteven14-gif.github.io/vortexlearning2/**` to the **Redirect URLs** allow list. Also allow `http://localhost:5173/**` and `http://localhost:4173/**` for local development. Remove any stale `http://localhost:3000` Site URL or redirect entry; otherwise recovery links may send production users to localhost.
-4. In Authentication → Email Templates, paste `templates/confirm-sign-up.html` into the **Confirm sign up** body and `templates/reset-password.html` into the **Reset password** body. Set the subjects to `VERIFY YOUR EMAIL — Vortex Learning` and `RESET YOUR PASSWORD — Vortex Learning`. These are live Supabase dashboard settings and are not changed by deploying migrations or the Edge Function. The confirmation email displays the six-digit code; users enter it in the app's verification form. Configure custom SMTP for authentication emails; Supabase's default sender is restricted and not suitable for public sign-ups.
-5. The Pages workflow defaults `VITE_API_BASE_URL` to `https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1`. If you later move the API, set the GitHub repository variable `VITE_API_BASE_URL` to override it, then run the **Deploy frontend to GitHub Pages** workflow.
+4. In Authentication → Email Templates, paste `templates/confirm-sign-up.html` into the **Confirm sign up** body and `templates/reset-password.html` into the **Reset password** body. Set the subjects to `VERIFY YOUR EMAIL — Vortex Learning` and `RESET YOUR PASSWORD — Vortex Learning`. Template content and custom SMTP remain Supabase dashboard settings; the backend workflow sets six-digit email codes to expire after three hours. Student email verification uses the code form, while staff activation emails also include a one-click button. Configure custom SMTP for authentication emails; Supabase's default sender is restricted and not suitable for public sign-ups.
+5. The frontend defaults `VITE_API_BASE_URL` to `https://dfcgxbfrzwfmbdeceyog.supabase.co/functions/v1` for local and Pages builds. Set `VITE_API_BASE_URL` in `.env` or as a GitHub repository variable to override it if you move the API. The Supabase CORS allow list includes local preview origins.
 6. Local SQLite accounts and passwords are not migrated to Supabase. To bootstrap the first Super Admin, first create and confirm the administrator's email account in Supabase Authentication → Users, then run this in the SQL editor, replacing the email and phone placeholders with the account details:
 
    ```sql
@@ -30,27 +30,33 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
          phone_number = excluded.phone_number;
    ```
 
-   Confirm that the query affected one row. The Super Admin signs in using the shared Teacher / Staff flow, school name `Vortex Learning`, this registered phone number, and the password set in Supabase Authentication. Do not put an administrator password in SQL or source control.
+   Confirm that the query affected one row. The Super Admin signs in using the shared Teacher / Staff flow, leaving School name blank and entering this registered phone number or email address and the password set in Supabase Authentication. Do not put an administrator password in SQL or source control.
 
 ## Verification and email behavior
 
 The Super Admin school registration workflow is backed by the additive
-`20261014130000_school_onboarding.sql` migration. It extends the existing school
-and staff records, creates a school and its initial administrator record in one
-database transaction, and leaves existing principal details and signatures
-untouched. Newly registered schools start as **Pending Verification** and
-**Active**; a Super Admin must explicitly update verification and operational
-status in the school directory. Selected grades are stored with the school and
-are used to constrain new class and results configuration.
+`20261014130000_school_onboarding.sql` and
+`20261015020000_school_email_activation.sql` migrations. New school registration
+saves the school record and sends a one-click verification link to its required
+official email address. After that address is verified, the Super Admin opens
+the school profile, enters the School Administrator's details, and sends the
+separate account activation email. The school email link is single-use; its
+temporary authentication identity is removed after verification. Existing
+principal details and signatures remain untouched. Newly registered schools
+start as **Pending Verification** and **Active**; a Super Admin must explicitly
+update platform verification and operational status in the school directory.
+Selected grades are stored with the school and are used to constrain new class
+and results configuration.
 
-The initial School Administrator is invited through Supabase Auth. Configure
-custom SMTP and paste `templates/invite-user.html` into Authentication → Email
+School Administrators and teachers receive a one-click activation link, choose
+their password after confirming their email, and are signed in automatically.
+Their accounts remain inactive until activation is complete. Configure custom
+SMTP and paste `templates/invite-user.html` into Authentication → Email
 Templates → **Invite user**. Make sure the GitHub Pages URL remains on the Auth
-redirect allowlist. The administrator follows the secure invitation link and
-sets their own password; the account remains inactive until that step
-completes. A failed email send does not roll back the school record; use
-**Resend invitation** in the school directory after correcting Auth email
-delivery settings.
+redirect allowlist. A failed school email send does not roll back the school
+record; resend its verification email from the school profile. A failed
+administrator or teacher invitation can likewise be resent after correcting
+Auth email delivery settings.
 
 School logos are kept in the existing private `school-documents` bucket. The
 API validates image signatures and size, associates each object with its school,
@@ -70,12 +76,15 @@ databases from its profile. Logo uploads can be retried from the profile if the
 initial upload fails.
 
 School Administrators enter each teacher's email during onboarding. Supabase
-sends the six-digit signup verification code to that address; the teacher must
-enter the same school, email, and code before the app presents password setup.
-The account is enabled only after the password is saved, and the teacher then
-signs in normally. A pending teacher's code can be resent from the Teachers
-list. This flow uses the **Confirm sign up** email template, which should
-describe the code as verification for a school account.
+sends a one-time code and a secure activation button to that address. The code
+and link expire after three hours (`auth.email.otp_expiry = 10800` in
+`supabase/config.toml`). This Supabase setting applies to all email OTPs and
+confirmation links for the project. Teachers can activate independently while
+the School Administrator continues adding other teachers; the Teachers list
+shows **Not verified**, **Email verified · activation pending**, or **Verified**
+and refreshes every 15 seconds. Pending activation emails can be resent there.
+The teacher's completed account can sign in with their school name and
+registered phone number or email.
 
 The school-based target onboarding flow is documented in `CBC-PLATFORM-PLAN.md`. The `20261014050000_school_platform.sql` migration adds school, class, roster, teacher-assignment, results, report-copy, timetable, and notice tables. It is a data-model foundation; do not treat it as a completed rollout until the API and frontend workflows are also deployed and verified.
 

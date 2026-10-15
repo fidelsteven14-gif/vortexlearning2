@@ -37,13 +37,13 @@ jobs:
         uses: supabase/setup-cli@v1
         with:
           version: latest
-      - name: Set email verification code length
+      - name: Set email verification code length and expiry
         run: |
           curl --fail-with-body --silent --show-error \
             -X PATCH "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID/config/auth" \
             -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
             -H "Content-Type: application/json" \
-            --data '{"mailer_otp_length":6}' \
+            --data '{"mailer_otp_length":6,"mailer_otp_exp":10800}' \
             --output /dev/null
       - name: Apply database migrations
         run: |
