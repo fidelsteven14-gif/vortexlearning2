@@ -1297,7 +1297,8 @@ async function onboardingRoutes(request: Request, path: string): Promise<Respons
       } else {
         const normalizedPhone = phoneSchema.safeParse(input.identifier);
         if (normalizedPhone.success) {
-          const { data, error } = await service.from("teacher_records").select("profiles!inner(email,active,email_verified,role)")
+          const { data, error } = await service.from("teacher_records")
+            .select("profiles!teacher_records_profile_id_fkey!inner(email,active,email_verified,role)")
             .eq("school_id", school.id).eq("phone_normalized", normalizedPhone.data)
             .in("profiles.role", ["teacher", "class_coordinator", "school_admin"]).maybeSingle();
           if (error) throw new Error(error.message);
@@ -1553,13 +1554,13 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (!school) return fail("This school was not found.", 404);
     if (database === "students") {
       const { data, error } = await service.from("student_rosters")
-        .select("id,full_name,assessment_number,profile_id,created_at,school_classes!inner(grade,stream),profiles(active,email_verified)")
+        .select("id,full_name,assessment_number,profile_id,created_at,school_classes!inner(grade,stream),profiles!student_rosters_profile_id_fkey(active,email_verified)")
         .eq("school_id", schoolId).order("full_name");
       if (error) throw new Error(error.message);
       return json({ school, students: data });
     }
     const { data, error } = await service.from("teacher_records")
-      .select("id,profile_id,account_role,full_name,teacher_email,phone_number,department_head,subject_head,invitation_status,created_at,profiles(active,email_verified),teacher_class_subjects(school_classes(grade,stream),school_subjects(name))")
+      .select("id,profile_id,account_role,full_name,teacher_email,phone_number,department_head,subject_head,invitation_status,created_at,profiles!teacher_records_profile_id_fkey(active,email_verified),teacher_class_subjects(school_classes(grade,stream),school_subjects(name))")
       .eq("school_id", schoolId).order("full_name");
     if (error) throw new Error(error.message);
     return json({ school, teachers: data });
