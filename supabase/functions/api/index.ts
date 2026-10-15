@@ -468,7 +468,11 @@ async function sendSchoolEmailVerification(
     redirectTo: schoolEmailVerificationRedirect(request, school.id),
   });
   if (error || !data.user) {
-    if (error) console.error("School email verification invitation failed:", error.name);
+    if (error) console.error("School email verification invitation failed:", {
+      name: error.name,
+      status: error.status,
+      code: error.code,
+    });
     const { error: statusError } = await service.from("schools").update({
       email_verification_status: "failed",
       email_verification_user_id: null,
@@ -499,7 +503,10 @@ async function sendSchoolEmailVerification(
     if (deleteError) throw new Error("A superseded school email verification account could not be removed.");
     return { sent: false, message: "The school's email verification changed during this request. Refresh the school profile before trying again." };
   }
-  return { sent: true, message: `A one-time school email verification link has been sent to ${school.email}.` };
+  return {
+    sent: true,
+    message: `Supabase accepted the verification email request for ${school.email}. Check the inbox and spam folder; delivery is not confirmed. If it does not arrive, review the custom SMTP provider's delivery logs.`,
+  };
 }
 
 async function schoolLogoUrl(storageKey: string | null): Promise<string | null> {
@@ -782,6 +789,8 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       email_verified_at: new Date().toISOString(),
       email_verification_status: "verified",
       email_verification_user_id: null,
+      operational_status: "active",
+      active: true,
     }).eq("id", school.id).eq("email_verification_user_id", session.user.id)
       .is("email_verified_at", null).select("id").maybeSingle();
     if (updateError) throw new Error(updateError.message);
@@ -1505,11 +1514,16 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (!parsed.success) return invalidBody(parsed);
     const schoolId = decodeURIComponent(schoolStatusRoute[1]);
     const { data: current, error: currentError } = await service.from("schools")
-      .select("verification_status,operational_status").eq("id", schoolId).maybeSingle();
+      .select("verification_status,operational_status,email_verification_required,email_verified_at")
+      .eq("id", schoolId).maybeSingle();
     if (currentError) throw new Error(currentError.message);
     if (!current) return fail("This school was not found.", 404);
     const verificationStatus = parsed.data.verificationStatus ?? current.verification_status;
     const operationalStatus = parsed.data.operationalStatus ?? current.operational_status;
+    if (current.email_verification_required && !current.email_verified_at
+      && (verificationStatus === "verified" || operationalStatus === "active")) {
+      return fail("Verify the school's official email before approving or activating the school.", 409);
+    }
     const now = new Date().toISOString();
     const { data: updated, error: updateError } = await service.from("schools").update({
       verification_status: verificationStatus,

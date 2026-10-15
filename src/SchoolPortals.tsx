@@ -418,7 +418,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
               <div><dt>County / Sub-County</dt><dd>{selectedSchool.county}, {selectedSchool.sub_county}</dd></div><div><dt>Physical location</dt><dd>{selectedSchool.location}</dd></div>
               <div><dt>Official telephone</dt><dd>{selectedSchool.telephone || "Not recorded"}</dd></div><div><dt>Official email</dt><dd>{selectedSchool.email || "Not provided"}</dd></div>
               <div><dt>Email verification</dt><dd>{selectedSchool.email_verification_required
-                ? selectedSchool.email_verified_at ? "Verified" : selectedSchool.email_verification_status === "sent" ? "Not verified · link sent" : `Not verified · ${selectedSchool.email_verification_status}`
+                ? selectedSchool.email_verified_at ? "Verified" : selectedSchool.email_verification_status === "sent" ? "Not verified · request accepted; delivery unconfirmed" : `Not verified · ${selectedSchool.email_verification_status}`
                 : "Not required for this existing school"}</dd></div>
               <div><dt>Postal address</dt><dd>{selectedSchool.po_box || "Not provided"}</dd></div><div><dt>Website</dt><dd>{selectedSchool.website || "Not provided"}</dd></div>
               <div><dt>Grades offered</dt><dd>{selectedSchool.grades?.join(", ") || "Not configured"}</dd></div>
@@ -441,9 +441,9 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           <article className="school-portal-card school-management-actions">
             <h3>School management</h3>
             {selectedSchool.email_verification_required && !selectedSchool.email_verified_at && <>
-              <p className="school-onboarding-note">The school's official email must be verified before you can create its School Administrator account.</p>
+              <p className="school-onboarding-note">This school is pending email activation and is inactive. Supabase accepted the email request, but delivery is not confirmed. Verify the official email before approving the school or creating its School Administrator account.</p>
               <button type="button" className="quiet-button" disabled={resendingSchoolVerification} onClick={() => void resendSchoolEmailVerification(selectedSchool.id)}>
-                <RefreshCw size={15} /> {resendingSchoolVerification ? "Sending…" : selectedSchool.email_verification_status === "sent" ? "Resend school verification link" : "Send school verification link"}
+                <RefreshCw size={15} /> {resendingSchoolVerification ? "Sending…" : selectedSchool.email_verification_status === "sent" ? "Resend school verification email" : "Send school verification email"}
               </button>
             </>}
             {(!selectedSchool.email_verification_required || selectedSchool.email_verified_at) && !selectedSchool.administrator && <form className="school-portal-form compact" onSubmit={(event) => void addSchoolAdministrator(event)}>
@@ -454,7 +454,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
               <label>Job title / designation<input required minLength={2} maxLength={100} value={administratorForm.designation} onChange={(event) => setAdministratorForm({ ...administratorForm, designation: event.target.value })} /></label>
               <button className="primary-button" type="submit" disabled={creatingAdministrator}>{creatingAdministrator ? "Creating account and sending link…" : "Create account and send activation link"} <ArrowRight size={15} /></button>
             </form>}
-            {selectedSchool.verification_status !== "verified" && <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "verificationStatus", "verified")}><ShieldCheck size={15} /> Verify school</button>}
+            {selectedSchool.verification_status !== "verified" && (!selectedSchool.email_verification_required || selectedSchool.email_verified_at) && <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "verificationStatus", "verified")}><ShieldCheck size={15} /> Approve school</button>}
             {selectedSchool.verification_status === "verified" && <p className="auth-notice">This school is verified.</p>}
             {selectedSchool.operational_status === "active"
               ? <button type="button" className="quiet-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "operationalStatus", "suspended")}>Suspend school</button>
@@ -509,18 +509,18 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   return <PortalShell title="Platform administration" subtitle={`Super Admin · ${user.name}`} onLogout={onLogout}>
     <section className="school-portal-grid school-admin-grid">
       <article className="school-portal-card">
-        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>Register the school and verify its official email before creating the School Administrator account.</p></div></div>
+        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>The school remains inactive while its official email is pending verification. You can create its School Administrator account after activation.</p></div></div>
         {error && <p className="auth-error" role="alert">{error}</p>}
         {registration && <div className="school-registration-result" role="status">
-          <div className="school-result-heading"><Check size={18} /><strong>{registration.school.name} is registered</strong></div>
-          <p>Internal school ID: <code>{registration.school.id}</code></p>
+          <div className="school-result-heading"><Check size={18} /><strong>{registration.emailVerificationStatus === "verified" ? `${registration.school.name} email is verified` : `${registration.school.name} is pending email activation`}</strong></div>
+          <p>Pending school reference: <code>{registration.school.id}</code></p>
           <p>School email: <strong>{registration.school.email}</strong></p>
-          <p>Email verification: <strong>{registration.emailVerificationStatus === "verified" ? "Verified" : registration.emailVerificationStatus === "sent" ? "Link sent — awaiting verification" : "Not sent — retry required"}</strong></p>
+          <p>Email verification: <strong>{registration.emailVerificationStatus === "verified" ? "Verified" : registration.emailVerificationStatus === "sent" ? "Request accepted by Supabase — delivery unconfirmed" : "Not accepted — retry required"}</strong></p>
           <p>{registration.emailVerificationMessage}</p>
           {registration.emailVerificationStatus === "failed" && <button className="quiet-button" type="button" onClick={() => void resendSchoolEmailVerification(registration.school.id)} disabled={resendingSchoolVerification}>
             <RefreshCw size={15} /> Retry school email verification
           </button>}
-          <p>After the school email is verified, select the school in the directory to create its School Administrator account.</p>
+          <p>This pending record is kept for tracking and resending only. The school remains inactive, and no School Administrator or school setup can proceed until the official email link is used.</p>
           {logoUploadError && <div className="school-upload-recovery"><p>{logoUploadError}</p>
             {schoolLogo && <button className="quiet-button" type="button" onClick={() => void retryLogoUpload()} disabled={busy}><Upload size={15} /> Retry logo upload</button>}
           </div>}

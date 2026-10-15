@@ -36,20 +36,26 @@ The Supabase project is `vortexlearning2` (`dfcgxbfrzwfmbdeceyog`) on the Free p
 
 The Super Admin school registration workflow is backed by the additive
 `20261014130000_school_onboarding.sql` and
-`20261015020000_school_email_activation.sql` migrations. New school registration
-saves the school record and sends a one-click verification link to its required
-official email address. After that address is verified, the Super Admin opens
-the school profile, enters the School Administrator's details, and sends the
-separate account activation email. The school email link is single-use; its
+`20261015020000_school_email_activation.sql`, and
+`20261015030000_require_school_email_before_activation.sql` migrations. School
+registration creates a visible pending record so the Super Admin can track and
+resend activation, but the school remains inactive and suspended until its
+official email is verified. The Supabase Auth invite API accepting an email
+request does not confirm delivery; check the recipient's inbox and spam folder,
+and use the SMTP provider's delivery logs if it does not arrive. The Super Admin
+cannot approve the school or create its School Administrator account before
+email verification. After the school email link is used, the school becomes
+active and the Super Admin can create the School Administrator account, which
+receives a separate activation email. The school email link is single-use; its
 temporary authentication identity is removed after verification. Existing
-principal details and signatures remain untouched. Newly registered schools
-start as **Pending Verification** and **Active**; a Super Admin must explicitly
-update platform verification and operational status in the school directory.
-Selected grades are stored with the school and are used to constrain new class
-and results configuration.
+principal details and signatures remain untouched. A Super Admin must still
+approve platform verification separately. Selected grades are stored with the
+school and are used to constrain new class and results configuration.
 
 School Administrators and teachers receive a one-click activation link, choose
 their password after confirming their email, and are signed in automatically.
+As with school email activation, an accepted invitation request is not proof
+that the recipient's provider delivered the message.
 Their accounts remain inactive until activation is complete. Configure custom
 SMTP and paste `templates/invite-user.html` into Authentication → Email
 Templates → **Invite user**. Make sure the GitHub Pages URL remains on the Auth
