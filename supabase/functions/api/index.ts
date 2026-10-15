@@ -1725,10 +1725,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       name: input.name,
       emailVerificationStatus: verification.sent ? "sent" : "failed",
     });
-    const { data: school, error: schoolError } = await service.from("schools")
+    const { data: school, error: schoolFetchError } = await service.from("schools")
       .select("id,name,examination_code,verification_status,operational_status,email,email_verification_required,email_verified_at,email_verification_status")
       .eq("id", schoolId).single();
-    if (schoolError) throw new Error(schoolError.message);
+    if (schoolFetchError) throw new Error(schoolFetchError.message);
     return json({
       school,
       emailVerificationStatus: verification.sent ? "sent" : "failed",
