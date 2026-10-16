@@ -259,7 +259,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
           <p className="auth-intro">{intro}</p>
           {mode === "login" && <div className="auth-tabs" role="tablist" aria-label="Account type">
             <button className={loginRole === "student" ? "auth-tab auth-tab-active" : "auth-tab"} type="button" role="tab" aria-selected={loginRole === "student"} onClick={() => setLoginRole("student")}>Student</button>
-            <button className={loginRole === "teacher" ? "auth-tab auth-tab-active" : "auth-tab"} type="button" role="tab" aria-selected={loginRole === "teacher"} onClick={() => setLoginRole("teacher")}>Teacher / Staff</button>
+            <button className={loginRole === "teacher" ? "auth-tab auth-tab-active" : "auth-tab"} type="button" role="tab" aria-selected={loginRole === "teacher"} onClick={() => setLoginRole("teacher")}>School staff</button>
           </div>}
 
           {mode === "student-confirm" && student && <div className="school-student-confirm">
@@ -307,6 +307,7 @@ export default function SchoolAuthScreen({ onAuthenticated }: { onAuthenticated:
 
           {mode === "login" && <div className="school-auth-alternatives">
             <button type="button" onClick={() => changeMode("student-lookup")}>Activate a student account</button>
+            <span className="school-auth-helper">School admin and teacher accounts are activated through their invitation links sent by the registering authority.</span>
           </div>}
           {mode === "verify" && <>
             <button className="auth-action-button auth-resend-button" type="button" onClick={() => void resendVerification()} disabled={busy}>Resend verification code</button>

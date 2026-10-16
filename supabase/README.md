@@ -77,13 +77,23 @@ Super Admin school profiles show live verification and operational status from
 the database. Verify, suspend/reactivate, and archive actions are available
 there; archiving retains school data and disables access. Permanent deletion is
 separate, requires an archived school and exact-name confirmation, and removes
-school records. The Super Admin can open each school's student and teacher
+school records, school files, and linked school login accounts. If Auth cannot
+remove any linked account, the portal reports the count that remains disabled
+so the cleanup issue is visible. The Super Admin can open each school's student and teacher
 databases from its profile. Logo uploads can be retried from the profile if the
 initial upload fails.
 
+New school onboarding remains inactive after the official school email link is
+used. Only then can the Super Admin create the School Administrator account.
+That administrator follows the activation button in their email and sets a
+password; successful activation marks school setup complete. Until then, the
+school profile shows the outstanding step and the Super Admin can resend the
+school or administrator activation email. Platform approval and operational
+activation remain separate Super Admin controls after setup is complete.
+
 School Administrators enter each teacher's email during onboarding. Supabase
 sends a one-time code and a secure activation button to that address. The code
-and link expire after three hours (`auth.email.otp_expiry = 10800` in
+and button open the activation page and expire after three hours (`auth.email.otp_expiry = 10800` in
 `supabase/config.toml`). This Supabase setting applies to all email OTPs and
 confirmation links for the project. Teachers can activate independently while
 the School Administrator continues adding other teachers; the Teachers list

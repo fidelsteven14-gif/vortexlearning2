@@ -789,13 +789,13 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
       email_verified_at: new Date().toISOString(),
       email_verification_status: "verified",
       email_verification_user_id: null,
-      operational_status: "active",
-      active: true,
+      operational_status: "suspended",
+      active: false,
     }).eq("id", school.id).eq("email_verification_user_id", session.user.id)
       .is("email_verified_at", null).select("id").maybeSingle();
     if (updateError) throw new Error(updateError.message);
     if (!verifiedSchool) return fail("The school email verification was already completed or the link has expired.", 409);
-    return json({ message: "The school email address is verified. The Super Admin can now create the School Administrator account." });
+    return json({ message: "The school email is verified. The Super Admin can now create the School Administrator account. The school remains pending until that administrator activates their account." });
   }
 
   if (request.method === "POST" && path === "/api/auth/resend-verification") {
@@ -869,18 +869,18 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
 
     const { error: passwordError } = await client.auth.updateUser({ password: parsed.data.password });
     if (passwordError) return fail("Your password could not be set. Ask the person who registered your account to resend the invitation.", 400);
-    const { data: activated, error: activateError } = await service.from("profiles").update({
-      active: true,
-      email_verified: true,
-    }).eq("id", data.user.id).eq("role", profile.role).eq("active", false).select("id").maybeSingle();
-    if (activateError) throw new Error(activateError.message);
-    if (!activated) return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
-    const { error: invitationUpdateError } = await service.from("teacher_records")
-      .update({ invitation_status: "accepted" }).eq("id", staffRecord.id);
-    if (invitationUpdateError) throw new Error(invitationUpdateError.message);
+    const { error: activationError } = await service.rpc("activate_school_staff_account", { p_user_id: data.user.id });
+    if (activationError) {
+      if (activationError.message.includes("already active")) {
+        return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
+      }
+      throw new Error(activationError.message);
+    }
     return json({
       ...await appSession(data.session, data.user.id),
-      message: "Your email is confirmed and your account is active.",
+      message: profile.role === "school_admin"
+        ? "Your School Administrator account is active and school registration is complete."
+        : "Your email is confirmed and your account is active.",
     });
   }
 
@@ -914,16 +914,14 @@ async function authRoutes(request: Request, path: string): Promise<Response | nu
     if (sessionError) return fail("Your email was confirmed but the account could not be activated. Ask the Super Admin to resend your invitation.", 400);
     const { error: passwordError } = await client.auth.updateUser({ password: parsed.data.password });
     if (passwordError) return fail("Your password could not be set. Ask the Super Admin to resend your invitation.", 400);
-    const { data: activated, error: activateError } = await service.from("profiles").update({
-      active: true,
-      email_verified: true,
-    }).eq("id", data.user.id).eq("role", "school_admin").eq("active", false).select("id").maybeSingle();
-    if (activateError) throw new Error(activateError.message);
-    if (!activated) return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
-    const { error: invitationUpdateError } = await service.from("teacher_records")
-      .update({ invitation_status: "accepted" }).eq("id", administrator.id);
-    if (invitationUpdateError) throw new Error(invitationUpdateError.message);
-    return json({ message: "Your email is confirmed and your School Administrator account is ready. You can now sign in." });
+    const { error: activationError } = await service.rpc("activate_school_staff_account", { p_user_id: data.user.id });
+    if (activationError) {
+      if (activationError.message.includes("already active")) {
+        return fail("The invitation was already used or has expired. Sign in or ask for a new invitation.", 409);
+      }
+      throw new Error(activationError.message);
+    }
+    return json({ message: "Your School Administrator account is active and school registration is complete. You can now sign in." });
   }
 
   if (request.method === "POST" && path === "/api/auth/reset-password") {
@@ -1515,7 +1513,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (!parsed.success) return invalidBody(parsed);
     const schoolId = decodeURIComponent(schoolStatusRoute[1]);
     const { data: current, error: currentError } = await service.from("schools")
-      .select("verification_status,operational_status,email_verification_required,email_verified_at")
+      .select("verification_status,operational_status,email_verification_required,email_verified_at,onboarding_completed_at")
       .eq("id", schoolId).maybeSingle();
     if (currentError) throw new Error(currentError.message);
     if (!current) return fail("This school was not found.", 404);
@@ -1524,6 +1522,10 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (current.email_verification_required && !current.email_verified_at
       && (verificationStatus === "verified" || operationalStatus === "active")) {
       return fail("Verify the school's official email before approving or activating the school.", 409);
+    }
+    if (current.email_verification_required && !current.onboarding_completed_at
+      && (verificationStatus === "verified" || operationalStatus === "active")) {
+      return fail("The School Administrator must activate their account before approving or activating the school.", 409);
     }
     const now = new Date().toISOString();
     const { data: updated, error: updateError } = await service.from("schools").update({
@@ -1583,21 +1585,40 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
     if (parsed.data.confirmationName !== school.name) {
       return fail("Type the exact school name to confirm permanent deletion.", 400);
     }
+    const [schoolProfiles, studentAccounts, teacherAccounts] = await Promise.all([
+      service.from("profiles").select("id").eq("school_id", schoolId),
+      service.from("student_rosters").select("profile_id").eq("school_id", schoolId).not("profile_id", "is", null),
+      service.from("teacher_records").select("profile_id").eq("school_id", schoolId).not("profile_id", "is", null),
+    ]);
+    const accountQueryError = schoolProfiles.error ?? studentAccounts.error ?? teacherAccounts.error;
+    if (accountQueryError) throw new Error(`School accounts could not be collected for deletion: ${accountQueryError.message}`);
+    const accountIds = new Set<string>([
+      ...(schoolProfiles.data ?? []).map(({ id }) => id),
+      ...(studentAccounts.data ?? []).map(({ profile_id }) => profile_id).filter((id): id is string => id !== null),
+      ...(teacherAccounts.data ?? []).map(({ profile_id }) => profile_id).filter((id): id is string => id !== null),
+      ...(school.email_verification_user_id ? [school.email_verification_user_id] : []),
+    ]);
+    const storageObjects = await schoolStorageObjects(schoolId);
     const { error: auditError } = await service.from("admin_audit_logs").insert({
       admin_id: profile.id,
       action: "school_permanent_deletion_requested",
       entity_type: "school",
       entity_id: schoolId,
-      details_json: { name: school.name },
+      details_json: { name: school.name, linkedAccountCount: accountIds.size },
     });
     if (auditError) throw new Error(auditError.message);
-    if (school.email_verification_user_id) {
-      const { error: verificationUserError } = await service.auth.admin.deleteUser(school.email_verification_user_id);
-      if (verificationUserError) throw new Error(`The temporary school verification account could not be removed: ${verificationUserError.message}`);
-    }
-    const storageObjects = await schoolStorageObjects(schoolId);
     const { error: deleteError } = await service.rpc("delete_school_permanently", { p_school_id: schoolId });
     if (deleteError) throw new Error(deleteError.message);
+
+    let accountDeletionFailures = 0;
+    for (const accountId of accountIds) {
+      const { error: accountError } = await service.auth.admin.deleteUser(accountId);
+      if (accountError) {
+        accountDeletionFailures += 1;
+        console.error("School account cleanup after permanent deletion failed:", accountError.name);
+      }
+    }
+
     let storageWarning = "";
     if (storageObjects.length) {
       const { error: storageError } = await service.storage.from("school-documents").remove(storageObjects);
@@ -1606,7 +1627,15 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
         storageWarning = " School records were deleted, but some private files could not be removed.";
       }
     }
-    return json({ deleted: true, message: `School ${school.name} and its school records were permanently deleted.${storageWarning}` });
+    const accountMessage = accountDeletionFailures
+      ? ` ${accountDeletionFailures} of ${accountIds.size} linked account(s) could not be removed and remain disabled.`
+      : ` ${accountIds.size} linked account(s) were removed.`;
+    return json({
+      deleted: true,
+      accountsDeleted: accountDeletionFailures === 0,
+      accountDeletionFailures,
+      message: `School ${school.name} and its school records were permanently deleted.${accountMessage}${storageWarning}`,
+    });
   }
 
   const invitationRoute = path.match(/^\/api\/super-admin\/schools\/([^/]+)\/administrator-invitation$/);
@@ -1642,7 +1671,7 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
   if (path === "/api/super-admin/schools" && request.method === "GET") {
     if (!isSuperAdmin) return fail("You do not have permission to view platform schools.", 403);
     const { data, error } = await service.from("schools")
-      .select("id,name,examination_code,category,ownership,county,sub_county,location,telephone,logo_storage_key,email,email_verification_required,email_verified_at,email_verification_status,po_box,website,grades,verification_status,operational_status,active,created_at")
+      .select("id,name,examination_code,category,ownership,county,sub_county,location,telephone,logo_storage_key,email,email_verification_required,email_verified_at,email_verification_status,onboarding_completed_at,po_box,website,grades,verification_status,operational_status,active,created_at")
       .order("name");
     if (error) throw new Error(error.message);
     const schools = data as Array<Record<string, unknown> & { id: string }>;
@@ -1686,8 +1715,18 @@ async function schoolManagementRoutes(request: Request, path: string): Promise<R
       const invitationStatus = linkedProfile?.active && linkedProfile.email_verified
         ? "accepted"
         : administrator?.invitation_status ?? "not_invited";
+      const onboardingStatus = school.onboarding_completed_at
+        ? "complete"
+        : school.email_verification_required && !school.email_verified_at
+          ? "school_email_pending"
+          : !administrator
+            ? "administrator_not_created"
+            : invitationStatus === "failed"
+              ? "administrator_invitation_failed"
+              : "administrator_activation_pending";
       return {
         ...school,
+        onboardingStatus,
         logoUrl: await schoolLogoUrl(school.logo_storage_key as string | null),
         administrator: administrator ? {
           name: administrator.full_name,

@@ -22,6 +22,8 @@ type SchoolRecord = {
   email_verification_required: boolean;
   email_verified_at: string | null;
   email_verification_status: "not_required" | "pending" | "sent" | "failed" | "verified";
+  onboarding_completed_at: string | null;
+  onboardingStatus: "school_email_pending" | "administrator_not_created" | "administrator_invitation_failed" | "administrator_activation_pending" | "complete";
   verification_status: "pending" | "verified" | "rejected";
   operational_status: "active" | "suspended" | "archived";
   administrator: { name: string; email: string | null; invitationStatus: string } | null;
@@ -255,11 +257,13 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   async function retryAdministratorInvitation(schoolId: string) {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
-      await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>(
+      const result = await apiRequest<{ invitationStatus: "sent" | "failed"; message: string }>(
         `/api/super-admin/schools/${schoolId}/administrator-invitation`,
         { method: "POST" },
       );
+      setNotice(result.message);
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The invitation could not be retried.");
@@ -362,7 +366,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
     setDeletingSchool(true);
     setError("");
     try {
-      const result = await apiRequest<{ deleted: boolean; message: string }>(`/api/super-admin/schools/${pendingDelete.id}`, {
+      const result = await apiRequest<{ deleted: boolean; accountsDeleted: boolean; accountDeletionFailures: number; message: string }>(`/api/super-admin/schools/${pendingDelete.id}`, {
         method: "DELETE",
         body: JSON.stringify({ confirmationName: deleteConfirmationName }),
       });
@@ -371,6 +375,9 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
       setDeleteConfirmationName("");
       setSelectedSchoolId("");
       await refresh();
+      if (!result.accountsDeleted) {
+        setError(`${result.accountDeletionFailures} linked account(s) could not be removed. They are disabled; contact support to complete account cleanup.`);
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The school could not be deleted.");
     } finally {
@@ -381,6 +388,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   const grades = Array.from({ length: 12 }, (_, index) => `Grade ${index + 1}`);
   const phonePattern = "(?:\\+?254|0)(?:[17]\\d{8}|[2-5]\\d{7,8})";
   const selectedSchool = schools.find((school) => school.id === selectedSchoolId);
+  const schoolSetupComplete = Boolean(selectedSchool?.onboarding_completed_at);
 
   if (selectedSchool) {
     return <PortalShell title={selectedSchool.name} subtitle="School profile and databases" onLogout={onLogout}>
@@ -420,6 +428,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
               <div><dt>Email verification</dt><dd>{selectedSchool.email_verification_required
                 ? selectedSchool.email_verified_at ? "Verified" : selectedSchool.email_verification_status === "sent" ? "Not verified · request accepted; delivery unconfirmed" : `Not verified · ${selectedSchool.email_verification_status}`
                 : "Not required for this existing school"}</dd></div>
+              <div><dt>School setup</dt><dd>{selectedSchool.onboarding_completed_at ? "Complete · School Administrator activated" : selectedSchool.onboardingStatus === "school_email_pending" ? "Pending · verify official school email" : selectedSchool.onboardingStatus === "administrator_not_created" ? "Pending · create School Administrator" : selectedSchool.onboardingStatus === "administrator_invitation_failed" ? "Pending · resend School Administrator activation" : "Pending · School Administrator must activate account"}</dd></div>
               <div><dt>Postal address</dt><dd>{selectedSchool.po_box || "Not provided"}</dd></div><div><dt>Website</dt><dd>{selectedSchool.website || "Not provided"}</dd></div>
               <div><dt>Grades offered</dt><dd>{selectedSchool.grades?.join(", ") || "Not configured"}</dd></div>
               <div><dt>School Administrator</dt><dd>{selectedSchool.administrator?.name ?? "Not assigned"} · {selectedSchool.administrator?.invitationStatus ?? "not invited"}</dd></div>
@@ -454,18 +463,26 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
               <label>Job title / designation<input required minLength={2} maxLength={100} value={administratorForm.designation} onChange={(event) => setAdministratorForm({ ...administratorForm, designation: event.target.value })} /></label>
               <button className="primary-button" type="submit" disabled={creatingAdministrator}>{creatingAdministrator ? "Creating account and sending link…" : "Create account and send activation link"} <ArrowRight size={15} /></button>
             </form>}
-            {selectedSchool.verification_status !== "verified" && (!selectedSchool.email_verification_required || selectedSchool.email_verified_at) && <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "verificationStatus", "verified")}><ShieldCheck size={15} /> Approve school</button>}
+            {selectedSchool.email_verification_required && selectedSchool.email_verified_at && !schoolSetupComplete && <p className="school-onboarding-note">
+              {selectedSchool.administrator
+                ? selectedSchool.administrator.invitationStatus === "failed"
+                  ? "The School Administrator invitation failed. Resend the activation email; school setup remains pending until the administrator activates the account."
+                  : "The school email is verified. School setup remains pending until the School Administrator activates their account from the email link."
+                : "The school email is verified. Create the School Administrator account and send its activation link to continue registration."}
+            </p>}
+            {selectedSchool.email_verification_required && selectedSchool.onboarding_completed_at && selectedSchool.operational_status !== "active" && <p className="auth-notice" role="status">School setup is complete, but the school is currently {selectedSchool.operational_status}. Reactivate it to allow staff to use school systems.</p>}
+            {selectedSchool.verification_status !== "verified" && (!selectedSchool.email_verification_required || schoolSetupComplete) && <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "verificationStatus", "verified")}><ShieldCheck size={15} /> Approve school</button>}
             {selectedSchool.verification_status === "verified" && <p className="auth-notice">This school is verified.</p>}
             {selectedSchool.operational_status === "active"
               ? <button type="button" className="quiet-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "operationalStatus", "suspended")}>Suspend school</button>
-              : <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => void updateSchoolStatus(selectedSchool, "operationalStatus", "active")}>Reactivate school</button>}
+              : <button type="button" className="primary-button" disabled={updatingSchoolId === selectedSchool.id || (selectedSchool.email_verification_required && !schoolSetupComplete)} onClick={() => void updateSchoolStatus(selectedSchool, "operationalStatus", "active")}>{selectedSchool.operational_status === "suspended" ? "Activate school" : "Reactivate school"}</button>}
             {selectedSchool.operational_status !== "archived" && <button type="button" className="quiet-button school-archive-button" disabled={updatingSchoolId === selectedSchool.id} onClick={() => {
               if (window.confirm(`Archive ${selectedSchool.name}? Its records will be retained, and school users will lose access until it is reactivated.`)) {
                 void updateSchoolStatus(selectedSchool, "operationalStatus", "archived");
               }
             }}><Archive size={15} /> Archive school and retain records</button>}
             <button type="button" className="school-permanent-delete-button" disabled={selectedSchool.operational_status !== "archived"} onClick={() => { setPendingDelete(selectedSchool); setDeleteConfirmationName(""); }}><Trash2 size={15} /> {selectedSchool.operational_status === "archived" ? "Permanently delete school" : "Archive before permanent deletion"}</button>
-            {selectedSchool.administrator?.invitationStatus === "failed" && <button type="button" className="quiet-button" disabled={busy} onClick={() => void retryAdministratorInvitation(selectedSchool.id)}>Resend administrator invitation</button>}
+            {selectedSchool.administrator && selectedSchool.administrator.invitationStatus !== "accepted" && <button type="button" className="quiet-button" disabled={busy} onClick={() => void retryAdministratorInvitation(selectedSchool.id)}><RefreshCw size={15} /> Resend administrator activation link</button>}
           </article>
         </section>}
         {selectedDatabase === "students" && <article className="school-portal-card school-database-table">
@@ -495,7 +512,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           <button type="button" className="school-delete-close" aria-label="Cancel deletion" onClick={() => setPendingDelete(null)}><X size={18} /></button>
           <Trash2 size={24} />
           <h2 id="school-delete-title">Permanently delete {pendingDelete.name}?</h2>
-          <p>This cannot be undone. Student, teacher, class, and academic records for this school will be permanently removed. School accounts will be disabled. To keep records, cancel and use Archive instead.</p>
+          <p>This cannot be undone. Student, teacher, class, academic records, school files, and linked school accounts will be permanently removed. To keep records, cancel and use Archive instead.</p>
           <label>Type <strong>{pendingDelete.name}</strong> to confirm<input autoFocus value={deleteConfirmationName} onChange={(event) => setDeleteConfirmationName(event.target.value)} /></label>
           <div><button className="quiet-button" type="button" onClick={() => setPendingDelete(null)} disabled={deletingSchool}>Cancel</button>
             <button className="school-permanent-delete-button" type="button" onClick={() => void permanentlyDeleteSchool()} disabled={deletingSchool || deleteConfirmationName !== pendingDelete.name}>
@@ -509,7 +526,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
   return <PortalShell title="Platform administration" subtitle={`Super Admin · ${user.name}`} onLogout={onLogout}>
     <section className="school-portal-grid school-admin-grid">
       <article className="school-portal-card">
-        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>The school remains inactive while its official email is pending verification. You can create its School Administrator account after activation.</p></div></div>
+        <div className="school-portal-card-heading"><School size={20} /><div><h2>Register a new school</h2><p>The school remains pending until its official email is verified and the School Administrator activates their account using the emailed link.</p></div></div>
         {error && <p className="auth-error" role="alert">{error}</p>}
         {registration && <div className="school-registration-result" role="status">
           <div className="school-result-heading"><Check size={18} /><strong>{registration.emailVerificationStatus === "verified" ? `${registration.school.name} email is verified` : `${registration.school.name} is pending email activation`}</strong></div>
@@ -520,7 +537,7 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
           {registration.emailVerificationStatus === "failed" && <button className="quiet-button" type="button" onClick={() => void resendSchoolEmailVerification(registration.school.id)} disabled={resendingSchoolVerification}>
             <RefreshCw size={15} /> Retry school email verification
           </button>}
-          <p>This pending record is kept for tracking and resending only. The school remains inactive, and no School Administrator or school setup can proceed until the official email link is used.</p>
+          <p>This record remains pending for tracking and resending. The School Administrator account can be created after school email verification, but school setup is not complete until the administrator activates their account using the emailed link.</p>
           {logoUploadError && <div className="school-upload-recovery"><p>{logoUploadError}</p>
             {schoolLogo && <button className="quiet-button" type="button" onClick={() => void retryLogoUpload()} disabled={busy}><Upload size={15} /> Retry logo upload</button>}
           </div>}
@@ -598,7 +615,9 @@ function SuperAdminPortal({ user, onLogout }: { user: User; onLogout: () => void
         {logoNotice && <p className="auth-notice" role="status">{logoNotice}</p>}
         {schools.map((school) => <button className="school-directory-compact-row" key={school.id} type="button" onClick={() => { setSelectedSchoolId(school.id); setSelectedDatabase(null); }}>
           {school.logoUrl ? <img className="school-directory-logo" src={school.logoUrl} alt="" /> : <span className="school-directory-logo school-directory-placeholder"><School size={20} aria-hidden="true" /></span>}
-          <strong>{school.name}</strong><ArrowRight size={16} aria-hidden="true" />
+          <strong>{school.name}</strong>
+          <span className="school-directory-stage">{school.onboarding_completed_at ? "Setup complete" : school.onboardingStatus === "school_email_pending" ? "School email pending" : school.onboardingStatus === "administrator_not_created" ? "Administrator not created" : school.onboardingStatus === "administrator_invitation_failed" ? "Administrator invitation failed" : "Administrator activation pending"}</span>
+          <ArrowRight size={16} aria-hidden="true" />
         </button>)}
         {!schools.length && !error && <p className="school-empty">No schools registered yet.</p>}
       </article>

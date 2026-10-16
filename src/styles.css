@@ -905,6 +905,7 @@ h1, h2, h3, p { margin-top: 0; }
 .school-directory-compact-row { align-items: center; background: #fff; border: 1px solid #e7edef; border-radius: 11px; color: #183a43; cursor: pointer; display: flex; gap: 12px; margin-top: 9px; min-height: 68px; padding: 8px 12px; text-align: left; transition: border-color .15s, background .15s; width: 100%; }
 .school-directory-compact-row:hover, .school-directory-compact-row:focus-visible { background: #f7fbfa; border-color: #8ec9bd; outline: none; }
 .school-directory-compact-row > strong { flex: 1; font-size: 13px; overflow-wrap: anywhere; }
+.school-directory-stage { color: #687d83; font-size: 10px; max-width: 150px; text-align: right; }
 .school-directory-compact-row > svg { color: #789096; flex: 0 0 auto; }
 .school-directory-compact-row .school-directory-logo { flex: 0 0 44px; height: 44px; width: 44px; }
 .school-profile-page { margin: 0 auto; max-width: 1440px; }
@@ -970,8 +971,9 @@ h1, h2, h3, p { margin-top: 0; }
 .school-student-confirm > div strong { font-size: 14px; }
 .school-student-confirm > label { align-items: center; display: flex; font-size: 13px; gap: 8px; }
 .school-student-confirm .primary-button { justify-content: center; }
-.school-auth-alternatives { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin: 16px 0; }
+.school-auth-alternatives { align-items: center; display: flex; flex-direction: column; gap: 8px; justify-content: center; margin: 16px 0; }
 .school-auth-alternatives button { background: none; border: 0; color: #0f766e; cursor: pointer; font-size: 12px; font-weight: 700; padding: 6px; }
+.school-auth-helper { color: #5b6b72; font-size: 11px; text-align: center; }
 .teacher-activation-code { align-items: flex-start; background: #effaf4; border: 1px solid #b7e2c6; border-radius: 12px; color: #176437; display: flex; gap: 12px; margin: 0 auto 18px; max-width: 1440px; padding: 14px 18px; }
 .teacher-activation-code span { display: grid; gap: 4px; }
 .teacher-activation-code code { font-size: 18px; font-weight: 800; letter-spacing: .12em; }
